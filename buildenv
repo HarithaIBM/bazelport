@@ -15,7 +15,7 @@
 export ZOPEN_BUILD_LINE="STABLE"
 
 ## Required IF ZOPEN_BUILD_LINE='STABLE'
-export ZOPEN_STABLE_URL="https://github.com/bazelbuild/bazel/releases/download/7.2.0/bazel-7.2.0-dist.zip"  # Specify the stable build URL (either git or tarball)
+export ZOPEN_STABLE_URL="file:///tmp/bazel_dist/bazel-7.2.0-dist-zos.zip"  # Patched for z/OS script encoding
 export ZOPEN_STABLE_DEPS="check_java check_python zip unzip bash" # Specify the stable build dependencies.
 
 ## Required IF ZOPEN_BUILD_LINE='DEV'
@@ -112,9 +112,69 @@ zopen_build() {
   ## is built.
 #}
 
-#zopen_post_buildenv(){
+zopen_init(){
+  # Apply z/OS specific patches for protobuf compatibility
+  echo "Setting up z/OS build configuration..." >&2
+  
+  # Add z/OS configuration to Bazel args
+  export EXTRA_BAZEL_ARGS="${EXTRA_BAZEL_ARGS:-} --config=zos"
+  
+  echo "[zopen_init] Using unzip from PATH: $(which unzip)" >&2
+  echo "Using EXTRA_BAZEL_ARGS: $EXTRA_BAZEL_ARGS" >&2
+}
+
+zopen_post_buildenv(){
   ## This function runs after the 'buildenv' is processed.
-#}
+  echo "[zopen_post_buildenv] Using system unzip: $(which unzip)" >&2
+}
+
+zopen_post_extract(){
+  ## This function runs after the source tarball is extracted.
+  local sourcedir="$1"
+  
+  echo "[zopen_post_extract] Post-extraction fixes for sourcedir: ${sourcedir}" >&2
+  
+  # Change to source directory
+  cd "${sourcedir}" || {
+    echo "[zopen_post_extract] ERROR: Could not cd to ${sourcedir}" >&2
+    return 1
+  }
+  
+  echo "[zopen_post_extract] Working in: $(pwd)" >&2
+  
+  # Tag all binary files in derived directory if it exists
+  if [ -d "derived" ]; then
+    echo "[zopen_post_extract] Tagging binary files in derived directory..." >&2
+    find "derived" \( -name "*.jar" -o -name "*.so" -o -name "*.a" \) -exec /bin/chtag -b {} \; 2>&1 | head -5
+  fi
+  
+  # z/OS: Apply critical patch to unix_cc_configure.bzl for script encoding
+  echo "[zopen_post_extract] Applying z/OS patch to unix_cc_configure.bzl..." >&2
+  local bzl_file="tools/cpp/unix_cc_configure.bzl"
+  if [ -f "${bzl_file}" ]; then
+    # Use our patch script (go back to original repo dir)
+    if [ -f "/home/haritha/code/bazelport/patches/patch_unix_cc_configure.sh" ]; then
+      bash /home/haritha/code/bazelport/patches/patch_unix_cc_configure.sh "${bzl_file}" >&2
+    else
+      echo "[zopen_post_extract] WARNING: patch script not found" >&2
+    fi
+  else
+    echo "[zopen_post_extract] WARNING: Could not find unix_cc_configure.bzl at ${bzl_file}" >&2
+    echo "[zopen_post_extract] Files in tools/cpp:" >&2
+    ls -la tools/cpp/*.bzl 2>&1 | head -5 >&2
+  fi
+  
+  # Tag all shell scripts as ASCII
+  echo "[zopen_post_extract] Tagging shell scripts as ASCII..." >&2
+  find "tools" -name "*.sh" -exec /bin/chtag -tc ISO8859-1 {} \; 2>&1 | head -5
+  find "third_party" -name "*.sh" -exec /bin/chtag -tc ISO8859-1 {} \; 2>&1 | head -5
+  find "scripts" -name "*.sh" -exec /bin/chtag -tc ISO8859-1 {} \; 2>&1 | head -5
+  
+  echo "[zopen_post_extract] Completed successfully" >&2
+  return 0
+}
+
+
 
 #zopen_pre_build(){
   ## This function runs before the 'make' step of the build is run.
@@ -151,7 +211,7 @@ zopen_build() {
 
 #export ZOPEN_EXTRA_CFLAGS="" ## C compiler flags to append to CFLAGS (defaults to '').
 #export ZOPEN_EXTRA_CPPFLAGS="" ## C,C++ pre-processor flags to append to CPPFLAGS (defaults to '')
-#export ZOPEN_EXTRA_CXXFLAGS="" ## C++ compiler flags to append to CXXFLAGS (defaults to '')
+export ZOPEN_EXTRA_CXXFLAGS="-DPROTOBUF_USE_DLLS=0" ## C++ compiler flags to append to CXXFLAGS (defaults to '')
 #export ZOPEN_EXTRA_LDFLAGS="" ## C,C++ linker flags to append to LDFLAGS (defaults to '')
 #export ZOPEN_EXTRA_LIBS="" ## C,C++ libraries to append to LIBS (defaults to '')
 #export ZOPEN_BOOTSTRAP_OPTS="" ## Options to pass to bootstrap program (defaults to '')
@@ -192,32 +252,77 @@ export ZOPEN_CONFIGURE="skip"
 export ZOPEN_MAKE="zopen_bazel_make"
 export ZOPEN_INSTALL="zopen_bazel_install"
 
-# Custom compile step for Bazel
-zopen_bazel_make() {
-    echo "Running Bazel compile.sh..."
-    chmod +x compile.sh
-    bash ./compile.sh
-}
-
-# Custom install step to move the binary
-zopen_bazel_install() {
-    echo "Installing Bazel..."
-    mkdir -p "${ZOPEN_INSTALL_DIR}/bin"
-    cp output/bazel "${ZOPEN_INSTALL_DIR}/bin/"
-}
-
 # Custom compile step for Bazel (Zip Bomb Fix)
 zopen_bazel_make() {
-    # If zopen trapped us in the .bazelci subfolder, step out to the real root
+###echo "==== BEFORE compile.sh ====="
+# Use ZOPEN_ROOTFS if set, otherwise fallback to /data/zopen
+ZOPEN_BASE="${ZOPEN_ROOTFS:-/data/zopen}"
+export PATH=${ZOPEN_BASE}/usr/local/altbin:${ZOPEN_BASE}/usr/local/bin:$PATH
+# z/OS: Explicitly specify annotation processors to avoid auto-discovery
+# Auto-discovery triggers module resolution for checker-qual and errorprone-annotations
+# We only need AutoValue processors for code generation
+export BAZEL_JAVAC_OPTS="-processor com.google.auto.value.processor.AutoValueProcessor,com.google.auto.value.processor.AutoOneOfProcessor"
+# Disabled annotation processors as they cause javac to hang on z/OS
+# export BAZEL_JAVAC_OPTS="-processor \
+# com.google.auto.value.processor.AutoValueProcessor,\
+# com.google.auto.value.processor.AutoOneOfProcessor,\
+# com.google.auto.service.processor.AutoServiceProcessor"
+hash -r
+
+export EXTRA_BAZEL_ARGS="\
+--tool_java_runtime_version=local_jdk \
+--java_runtime_version=local_jdk \
+--tool_java_language_version=21 \
+--java_language_version=21 "
+#export EXTRA_BAZEL_ARGS="--tool_java_runtime_version=local_jdk"
+##echo "PATH=$PATH"
+##which grep
+##type grep
+##grep --version
+##echo "PATH=$PATH"
+##which grep
+##type grep
+##grep --version || true
+
+#echo "============================="    # If zopen trapped us in the .bazelci subfolder, step out to the real root
     if [ ! -f "compile.sh" ] && [ -f "../compile.sh" ]; then
         cd ..
     fi
     
     echo "Running Bazel compile.sh in $(pwd)..."
-    export PATH=/data/zopen/usr/local/bin:$PATH
+    ZOPEN_BASE="${ZOPEN_ROOTFS:-/data/zopen}"
+    export PATH=${ZOPEN_BASE}/usr/local/bin:$PATH
+    
+    # Check if derived directory exists (required for dist archive)
+    if [ ! -d "derived" ]; then
+        echo "ERROR: 'derived' directory not found - this may not be a proper dist archive extraction" >&2
+        echo "Current directory: $(pwd)" >&2
+        echo "Contents: $(ls -la | head -20)" >&2
+        return 1
+    fi
+    
     hash -r
     chmod +x compile.sh
+    
+    # z/OS: Set OUTPUT_DIR to use local output directory instead of /tmp
+    export OUTPUT_DIR="$(pwd)/output"
+    mkdir -p "${OUTPUT_DIR}"
+    
     bash ./compile.sh
+    rc=$?
+    if [ $rc -ne 0 ]; then
+        echo "ERROR: compile.sh failed with exit code $rc" >&2
+        return $rc
+    fi
+    
+    # Verify output/bazel was created
+    if [ ! -f "output/bazel" ]; then
+        echo "ERROR: output/bazel was not created by compile.sh" >&2
+        return 1
+    fi
+    
+    echo "Bazel binary successfully built at output/bazel"
+    return 0
 }
 
 # Custom install step (Zip Bomb Fix)
