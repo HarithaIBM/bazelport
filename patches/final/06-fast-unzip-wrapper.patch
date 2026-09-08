@@ -1,0 +1,29 @@
+--- /dev/null
++++ b/fast-unzip.sh
+@@ -0,0 +1,50 @@
++#!/bin/bash
++# z/OS: Wrapper for unzip that uses Java jar instead
++# Resolves protobuf classpath ordering issue
++
++# Check if -n (no-overwrite) flag is present
++NO_OVERWRITE=0
++for arg in "$@"; do
++  if [ "$arg" = "-n" ]; then
++    NO_OVERWRITE=1
++    break
++  fi
++done
++
++# If -n flag detected, fall back to real unzip
++if [ $NO_OVERWRITE -eq 1 ]; then
++  exec /home/haritha/zopen_23may/zopen/usr/bin/unzip "$@"
++fi
++
++# Otherwise use fast Java extraction
++echo "========================================"
++echo "🚀 FAST EXTRACTION ACTIVE!"
++echo "Using Java jar instead of unzip"
++echo "This will complete in seconds, not hours"
++echo "========================================"
++
++exec /usr/lpp/java/J21.0_64/bin/jar xf "$@"

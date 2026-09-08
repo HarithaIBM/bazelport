@@ -1,0 +1,16 @@
+--- a/.bazelrc
++++ b/.bazelrc
+@@ -100,3 +100,13 @@ build:docs --workspace_status_command=scripts/docs/get_workspace_status.sh
+ 
+ # User-specific .bazelrc
+ try-import %workspace%/user.bazelrc
++
++# z/OS specific configuration
++build --tool_java_runtime_version=local_jdk
++build --java_runtime_version=local_jdk
++build --java_language_version=21
++build --tool_java_language_version=21
++build --java_bootstrap_runtime_version=local_jdk
++build --repo_env=JAVA_HOME=/usr/lpp/java/J21.0_64
++build --host_platform=//zos_toolchain:zos_platform
++build --platforms=//zos_toolchain:zos_platform

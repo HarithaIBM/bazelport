@@ -1,0 +1,9 @@
+--- a/buildenv
++++ b/buildenv
+@@ -15,3 +15,7 @@ export PYTHON_BIN_PATH="/home/opnzos/local/pyz/bin/python3"
+ export GOROOT="/home/haritha/dhgo/go"
+ export USE_BAZEL_VERSION="$(pwd)/.bazelci/output/libblaze.jar"
+ export OUTPUT_DIR="$(pwd)/.bazelci/output"
++
++# z/OS: Explicit annotation processors to avoid Java 21 module resolution errors
++export BAZEL_JAVAC_OPTS="-processor com.google.auto.value.processor.AutoValueProcessor,com.google.auto.value.processor.AutoOneOfProcessor"

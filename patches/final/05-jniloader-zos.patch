@@ -1,0 +1,11 @@
+--- a/src/main/java/com/google/devtools/build/lib/jni/JniLoader.java
++++ b/src/main/java/com/google/devtools/build/lib/jni/JniLoader.java
+@@ -40,6 +40,8 @@ static void loadLibrary(String libraryName) {
+         library = "lib" + libraryName + ".dylib";
+       case WINDOWS ->
+         library = libraryName + ".dll";
++      case ZOS ->
++        library = "lib" + libraryName + ".so";
+       case LINUX, FREEBSD, OPENBSD ->
+         library = "lib" + libraryName + ".so";
+       default ->

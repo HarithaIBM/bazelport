@@ -1,0 +1,13 @@
+--- a/MODULE.bazel
++++ b/MODULE.bazel
+@@ -85,6 +85,10 @@ register_toolchains("@bazel_tools//tools/python:autodetecting_toolchain")
+ # Register the default Java toolchains
+ register_toolchains("@local_jdk//:all")
+ 
++# z/OS: Register z/OS Java toolchains
++register_toolchains("//zos_toolchain:zos_java_runtime_toolchain")
++register_toolchains("//zos_toolchain:zos_java_bootstrap_runtime_toolchain")
++
+ register_toolchains("@local_config_winsdk//:all")
+ 
+ register_toolchains("//src/main/res:empty_rc_toolchain")

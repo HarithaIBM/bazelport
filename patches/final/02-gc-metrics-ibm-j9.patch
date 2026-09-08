@@ -1,0 +1,16 @@
+--- a/src/main/java/com/google/devtools/build/lib/metrics/GarbageCollectionMetricsUtils.java
++++ b/src/main/java/com/google/devtools/build/lib/metrics/GarbageCollectionMetricsUtils.java
+@@ -48,6 +48,13 @@ public static boolean isMajorGc(String name) {
+       case "G1 Old Generation":
+       case "G1 Mixed Generation":
+       case "Shenandoah Cycles":
++      // z/OS: IBM J9 JVM GC collector names
++      case "global":
++      case "scavenge":
++      case "partial gc":
++      case "global garbage collect":
++      case "allocation failure":
++      case "concurrent mark":
+         return true;
+     }
+     return false;

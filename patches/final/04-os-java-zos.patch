@@ -1,0 +1,14 @@
+--- a/src/main/java/com/google/devtools/build/lib/util/OS.java
++++ b/src/main/java/com/google/devtools/build/lib/util/OS.java
+@@ -24,9 +24,10 @@ public enum OS {
+   OPENBSD("openbsd", "OpenBSD"),
+   LINUX("linux", "Linux"),
+   WINDOWS("windows", "Windows"),
++  ZOS("zos", "z/OS", "OS/390"),
+   UNKNOWN("unknown", "");
+ 
+-  private static final EnumSet<OS> POSIX_COMPATIBLE = EnumSet.of(DARWIN, FREEBSD, OPENBSD, LINUX);
++  private static final EnumSet<OS> POSIX_COMPATIBLE = EnumSet.of(DARWIN, FREEBSD, OPENBSD, LINUX, ZOS);
+ 
+   private final String canonicalName;
+   private final String[] detectionNames;

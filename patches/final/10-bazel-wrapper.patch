@@ -1,0 +1,19 @@
+--- /dev/null
++++ b/output/bazel
+@@ -0,0 +1,17 @@
++#!/bin/bash
++# Bazel 7.2.0 for z/OS - ASCII output encoding wrapper
++
++SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
++JAR="$SCRIPT_DIR/libblaze.jar"
++
++# Force ASCII encoding
++export LC_ALL=C
++
++# Run Bazel with ISO8859-1 encoding (ASCII on z/OS)
++# Note: Do NOT use java_binary_wrapper - it breaks encoding
++exec /usr/lpp/java/J21.0_64/bin/java \
++  -Dfile.encoding=ISO8859-1 \
++  -Dsun.jnu.encoding=ISO8859-1 \
++  -cp "$JAR" \
++  com.google.devtools.build.lib.bazel.Bazel "$@"

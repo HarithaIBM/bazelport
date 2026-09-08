@@ -1,0 +1,26 @@
+--- /dev/null
++++ b/zos_toolchain/constraints.bzl
+@@ -0,0 +1,23 @@
++"""z/OS platform constraints for Bazel."""
++
++def define_zos_platform():
++    """Define z/OS operating system constraint."""
++    
++    # Create constraint for z/OS OS
++    native.constraint_setting(
++        name = "zos_constraint",
++        default_constraint_value = ":is_not_zos",
++        visibility = ["//visibility:public"],
++    )
++    
++    native.constraint_value(
++        name = "is_zos",
++        constraint_setting = ":zos_constraint",
++        visibility = ["//visibility:public"],
++    )
++    
++    native.constraint_value(
++        name = "is_not_zos",
++        constraint_setting = ":zos_constraint",
++        visibility = ["//visibility:public"],
++    )
