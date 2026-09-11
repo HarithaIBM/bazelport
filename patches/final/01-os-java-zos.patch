@@ -1,8 +1,0 @@
---- /dev/null
-+++ src/main/java/com/google/devtools/build/lib/util/OS.java
-@@ -0,0 +1,5 @@
-+// z/OS support added
-+ZOS("zos", "z/OS", "OS/390"),
-+// In POSIX_COMPATIBLE.contains() check, add:
-+// case ZOS:
-+//   return true;

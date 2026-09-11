@@ -1,0 +1,721 @@
+From 4cc26a530678bc4bd17c5202580cc0f83e6b4ad1 Mon Sep 17 00:00:00 2001
+From: Bazel z/OS Port <bazel@zos.build>
+Date: Fri, 11 Sep 2026 03:04:49 -0400
+Subject: [PATCH 1/2] z/OS: Tag scripts as ASCII before execution
+
+Add chtag command to tag scripts as ISO8859-1 (ASCII) before execution
+on z/OS to prevent 'Exec format error'.
+---
+ tools/cpp/unix_cc_configure.bzl | 701 +-------------------------------
+ 1 file changed, 1 insertion(+), 700 deletions(-)
+
+diff --git a/tools/cpp/unix_cc_configure.bzl b/tools/cpp/unix_cc_configure.bzl
+index 2184487..f66f339 100644
+--- a/tools/cpp/unix_cc_configure.bzl
++++ b/tools/cpp/unix_cc_configure.bzl
+@@ -1,700 +1 @@
+-# pylint: disable=g-bad-file-header
+-# Copyright 2016 The Bazel Authors. All rights reserved.
+-
+-# Licensed under the Apache License, Version 2.0 (the "License");
+-# you may not use this file except in compliance with the License.
+-# You may obtain a copy of the License at
+-#
+-#    http://www.apache.org/licenses/LICENSE-2.0
+-#
+-# Unless required by applicable law or agreed to in writing, software
+-# distributed under the License is distributed on an "AS IS" BASIS,
+-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+-# See the License for the specific language governing permissions and
+-# limitations under the License.
+-"""Configuring the C++ toolchain on Unix platforms."""
+-
+-load(
+-    "@bazel_tools//tools/cpp:lib_cc_configure.bzl",
+-    "auto_configure_fail",
+-    "auto_configure_warning",
+-    "auto_configure_warning_maybe",
+-    "escape_string",
+-    "execute",
+-    "get_env_var",
+-    "get_starlark_list",
+-    "resolve_labels",
+-    "split_escaped",
+-    "which",
+-    "write_builtin_include_directory_paths",
+-)
+-
+-def _uniq(iterable):
+-    """Remove duplicates from a list."""
+-
+-    unique_elements = {element: None for element in iterable}
+-    return unique_elements.keys()
+-
+-def _generate_system_module_map(repository_ctx, dirs, script_path):
+-    return execute(repository_ctx, [script_path] + dirs)
+-
+-def _prepare_include_path(repo_ctx, path):
+-    """Resolve include path before outputting it into the crosstool.
+-
+-    Args:
+-      repo_ctx: repository_ctx object.
+-      path: an include path to be resolved.
+-
+-    Returns:
+-      Resolved include path. Resulting path is absolute if it is outside the
+-      repository and relative otherwise.
+-    """
+-
+-    repo_root = str(repo_ctx.path("."))
+-
+-    # We're on UNIX, so the path delimiter is '/'.
+-    repo_root += "/"
+-    path = str(repo_ctx.path(path))
+-    if path.startswith(repo_root):
+-        return path[len(repo_root):]
+-    return path
+-
+-def _get_value(it):
+-    """Convert `it` in serialized protobuf format."""
+-    if type(it) == "int":
+-        return str(it)
+-    elif type(it) == "bool":
+-        return "true" if it else "false"
+-    else:
+-        return "\"%s\"" % it
+-
+-def _find_tool(repository_ctx, tool, overriden_tools):
+-    """Find a tool for repository, taking overridden tools into account."""
+-    if tool in overriden_tools:
+-        return overriden_tools[tool]
+-    return which(repository_ctx, tool, "/usr/bin/" + tool)
+-
+-def _get_tool_paths(repository_ctx, overriden_tools):
+-    """Compute the %-escaped path to the various tools"""
+-    return dict({
+-        k: escape_string(_find_tool(repository_ctx, k, overriden_tools))
+-        for k in [
+-            "ar",
+-            "ld",
+-            "llvm-cov",
+-            "llvm-profdata",
+-            "cpp",
+-            "gcc",
+-            "dwp",
+-            "gcov",
+-            "nm",
+-            "objcopy",
+-            "objdump",
+-            "strip",
+-        ]
+-    }.items())
+-
+-def _escaped_cplus_include_paths(repository_ctx):
+-    """Use ${CPLUS_INCLUDE_PATH} to compute the %-escaped list of flags for cxxflag."""
+-    if "CPLUS_INCLUDE_PATH" in repository_ctx.os.environ:
+-        result = []
+-        for p in repository_ctx.os.environ["CPLUS_INCLUDE_PATH"].split(":"):
+-            p = escape_string(str(repository_ctx.path(p)))  # Normalize the path
+-            result.append("-I" + p)
+-        return result
+-    else:
+-        return []
+-
+-_INC_DIR_MARKER_BEGIN = "#include <...>"
+-
+-# OSX add " (framework directory)" at the end of line, strip it.
+-_OSX_FRAMEWORK_SUFFIX = " (framework directory)"
+-_OSX_FRAMEWORK_SUFFIX_LEN = len(_OSX_FRAMEWORK_SUFFIX)
+-
+-def _cxx_inc_convert(path):
+-    """Convert path returned by cc -E xc++ in a complete path. Doesn't %-escape the path!"""
+-    path = path.strip()
+-    if path.endswith(_OSX_FRAMEWORK_SUFFIX):
+-        path = path[:-_OSX_FRAMEWORK_SUFFIX_LEN].strip()
+-    return path
+-
+-def _get_cxx_include_directories(repository_ctx, print_resource_dir_supported, cc, lang_flag, additional_flags = []):
+-    """Compute the list of C++ include directories."""
+-    result = repository_ctx.execute([cc, "-E", lang_flag, "-", "-v"] + additional_flags)
+-    index1 = result.stderr.find(_INC_DIR_MARKER_BEGIN)
+-    if index1 == -1:
+-        return []
+-    index1 = result.stderr.find("\n", index1)
+-    if index1 == -1:
+-        return []
+-    index2 = result.stderr.rfind("\n ")
+-    if index2 == -1 or index2 < index1:
+-        return []
+-    index2 = result.stderr.find("\n", index2 + 1)
+-    if index2 == -1:
+-        inc_dirs = result.stderr[index1 + 1:]
+-    else:
+-        inc_dirs = result.stderr[index1 + 1:index2].strip()
+-
+-    inc_directories = [
+-        _prepare_include_path(repository_ctx, _cxx_inc_convert(p))
+-        for p in inc_dirs.split("\n")
+-    ]
+-
+-    if print_resource_dir_supported:
+-        resource_dir = repository_ctx.execute(
+-            [cc, "-print-resource-dir"] + additional_flags,
+-        ).stdout.strip() + "/share"
+-        inc_directories.append(_prepare_include_path(repository_ctx, resource_dir))
+-
+-    return inc_directories
+-
+-def _is_compiler_option_supported(repository_ctx, cc, option):
+-    """Checks that `option` is supported by the C compiler. Doesn't %-escape the option."""
+-    result = repository_ctx.execute([
+-        cc,
+-        option,
+-        "-o",
+-        "/dev/null",
+-        "-c",
+-        str(repository_ctx.path("tools/cpp/empty.cc")),
+-    ])
+-    return result.stderr.find(option) == -1
+-
+-def _is_linker_option_supported(repository_ctx, cc, force_linker_flags, option, pattern):
+-    """Checks that `option` is supported by the C linker. Doesn't %-escape the option."""
+-    result = repository_ctx.execute([cc] + force_linker_flags + [
+-        option,
+-        "-o",
+-        "/dev/null",
+-        str(repository_ctx.path("tools/cpp/empty.cc")),
+-    ])
+-    return result.stderr.find(pattern) == -1
+-
+-def _find_linker_path(repository_ctx, cc, linker, is_clang):
+-    """Checks if a given linker is supported by the C compiler.
+-
+-    Args:
+-      repository_ctx: repository_ctx.
+-      cc: path to the C compiler.
+-      linker: linker to find
+-      is_clang: whether the compiler is known to be clang
+-
+-    Returns:
+-      String to put as value to -fuse-ld= flag, or None if linker couldn't be found.
+-    """
+-    result = repository_ctx.execute([
+-        cc,
+-        str(repository_ctx.path("tools/cpp/empty.cc")),
+-        "-o",
+-        "/dev/null",
+-        # Some macOS clang versions don't fail when setting -fuse-ld=gold, adding
+-        # these lines to force it to. This also means that we will not detect
+-        # gold when only a very old (year 2010 and older) is present.
+-        "-Wl,--start-lib",
+-        "-Wl,--end-lib",
+-        "-fuse-ld=" + linker,
+-        "-v",
+-    ])
+-    if result.return_code != 0:
+-        return None
+-
+-    if not is_clang:
+-        return linker
+-
+-    # Extract linker path from:
+-    # /usr/bin/clang ...
+-    # "/usr/bin/ld.lld" -pie -z ...
+-    linker_command = result.stderr.splitlines()[-1]
+-    return linker_command.strip().split(" ")[0].strip("\"'")
+-
+-def _add_compiler_option_if_supported(repository_ctx, cc, option):
+-    """Returns `[option]` if supported, `[]` otherwise. Doesn't %-escape the option."""
+-    return [option] if _is_compiler_option_supported(repository_ctx, cc, option) else []
+-
+-def _add_linker_option_if_supported(repository_ctx, cc, force_linker_flags, option, pattern):
+-    """Returns `[option]` if supported, `[]` otherwise. Doesn't %-escape the option."""
+-    return [option] if _is_linker_option_supported(repository_ctx, cc, force_linker_flags, option, pattern) else []
+-
+-def _get_no_canonical_prefixes_opt(repository_ctx, cc):
+-    # If the compiler sometimes rewrites paths in the .d files without symlinks
+-    # (ie when they're shorter), it confuses Bazel's logic for verifying all
+-    # #included header files are listed as inputs to the action.
+-
+-    # The '-fno-canonical-system-headers' should be enough, but clang does not
+-    # support it, so we also try '-no-canonical-prefixes' if first option does
+-    # not work.
+-    opt = _add_compiler_option_if_supported(
+-        repository_ctx,
+-        cc,
+-        "-fno-canonical-system-headers",
+-    )
+-    if len(opt) == 0:
+-        return _add_compiler_option_if_supported(
+-            repository_ctx,
+-            cc,
+-            "-no-canonical-prefixes",
+-        )
+-    return opt
+-
+-def get_env(repository_ctx):
+-    """Convert the environment in a list of export if in Homebrew. Doesn't %-escape the result!"""
+-    env = repository_ctx.os.environ
+-    if "HOMEBREW_RUBY_PATH" in env:
+-        return "\n".join([
+-            "export %s='%s'" % (k, env[k].replace("'", "'\\''"))
+-            for k in env
+-            if k != "_" and k.find(".") == -1
+-        ])
+-    else:
+-        return ""
+-
+-def _coverage_flags(repository_ctx, darwin):
+-    use_llvm_cov = "1" == get_env_var(
+-        repository_ctx,
+-        "BAZEL_USE_LLVM_NATIVE_COVERAGE",
+-        default = "0",
+-        enable_warning = False,
+-    )
+-    if darwin or use_llvm_cov:
+-        compile_flags = '"-fprofile-instr-generate",  "-fcoverage-mapping"'
+-        link_flags = '"-fprofile-instr-generate"'
+-    else:
+-        # gcc requires --coverage being passed for compilation and linking
+-        # https://gcc.gnu.org/onlinedocs/gcc/Instrumentation-Options.html#Instrumentation-Options
+-        compile_flags = '"--coverage"'
+-        link_flags = '"--coverage"'
+-    return compile_flags, link_flags
+-
+-def _is_clang(repository_ctx, cc):
+-    return "clang" in repository_ctx.execute([cc, "-v"]).stderr
+-
+-def _is_gcc(repository_ctx, cc):
+-    # GCC's version output uses the basename of argv[0] as the program name:
+-    # https://gcc.gnu.org/git/?p=gcc.git;a=blob;f=gcc/gcc.cc;h=158461167951c1b9540322fb19be6a89d6da07fc;hb=HEAD#l8728
+-    cc_stdout = repository_ctx.execute([cc, "--version"]).stdout
+-    return cc_stdout.startswith("gcc ") or cc_stdout.startswith("gcc-")
+-
+-def _get_compiler_name(repository_ctx, cc):
+-    if _is_clang(repository_ctx, cc):
+-        return "clang"
+-    if _is_gcc(repository_ctx, cc):
+-        return "gcc"
+-    return "compiler"
+-
+-def _find_generic(repository_ctx, name, env_name, overriden_tools, warn = False, silent = False):
+-    """Find a generic C++ toolchain tool. Doesn't %-escape the result."""
+-
+-    if name in overriden_tools:
+-        return overriden_tools[name]
+-
+-    result = name
+-    env_value = repository_ctx.os.environ.get(env_name)
+-    env_value_with_paren = ""
+-    if env_value != None:
+-        env_value = env_value.strip()
+-        if env_value:
+-            result = env_value
+-            env_value_with_paren = " (%s)" % env_value
+-    if result.startswith("/"):
+-        # Absolute path, maybe we should make this supported by our which function.
+-        return result
+-    result = repository_ctx.which(result)
+-    if result == None:
+-        msg = ("Cannot find %s or %s%s; either correct your path or set the %s" +
+-               " environment variable") % (name, env_name, env_value_with_paren, env_name)
+-        if warn:
+-            if not silent:
+-                auto_configure_warning(msg)
+-        else:
+-            auto_configure_fail(msg)
+-    return result
+-
+-def find_cc(repository_ctx, overriden_tools):
+-    cc = _find_generic(repository_ctx, "gcc", "CC", overriden_tools)
+-    if _is_clang(repository_ctx, cc):
+-        # If clang is run through a symlink with -no-canonical-prefixes, it does
+-        # not find its own include directory, which includes the headers for
+-        # libc++. Resolving the potential symlink here prevents this.
+-        result = repository_ctx.execute(["readlink", "-f", cc])
+-        if result.return_code == 0:
+-            return result.stdout.strip()
+-    return cc
+-
+-def configure_unix_toolchain(repository_ctx, cpu_value, overriden_tools):
+-    """Configure C++ toolchain on Unix platforms."""
+-    paths = resolve_labels(repository_ctx, [
+-        "@bazel_tools//tools/cpp:BUILD.tpl",
+-        "@bazel_tools//tools/cpp:generate_system_module_map.sh",
+-        "@bazel_tools//tools/cpp:armeabi_cc_toolchain_config.bzl",
+-        "@bazel_tools//tools/cpp:unix_cc_toolchain_config.bzl",
+-        "@bazel_tools//tools/cpp:linux_cc_wrapper.sh.tpl",
+-        "@bazel_tools//tools/cpp:osx_cc_wrapper.sh.tpl",
+-    ])
+-
+-    repository_ctx.symlink(
+-        paths["@bazel_tools//tools/cpp:unix_cc_toolchain_config.bzl"],
+-        "cc_toolchain_config.bzl",
+-    )
+-
+-    repository_ctx.symlink(
+-        paths["@bazel_tools//tools/cpp:armeabi_cc_toolchain_config.bzl"],
+-        "armeabi_cc_toolchain_config.bzl",
+-    )
+-
+-    repository_ctx.file("tools/cpp/empty.cc", "int main() {}")
+-    darwin = cpu_value.startswith("darwin")
+-    bsd = cpu_value == "freebsd" or cpu_value == "openbsd"
+-
+-    cc = find_cc(repository_ctx, overriden_tools)
+-    is_clang = _is_clang(repository_ctx, cc)
+-    overriden_tools = dict(overriden_tools)
+-    overriden_tools["gcc"] = cc
+-    overriden_tools["gcov"] = _find_generic(
+-        repository_ctx,
+-        "gcov",
+-        "GCOV",
+-        overriden_tools,
+-        warn = True,
+-        silent = True,
+-    )
+-    overriden_tools["llvm-cov"] = _find_generic(
+-        repository_ctx,
+-        "llvm-cov",
+-        "BAZEL_LLVM_COV",
+-        overriden_tools,
+-        warn = True,
+-        silent = True,
+-    )
+-    overriden_tools["llvm-profdata"] = _find_generic(
+-        repository_ctx,
+-        "llvm-profdata",
+-        "BAZEL_LLVM_PROFDATA",
+-        overriden_tools,
+-        warn = True,
+-        silent = True,
+-    )
+-    overriden_tools["ar"] = _find_generic(
+-        repository_ctx,
+-        "ar",
+-        "AR",
+-        overriden_tools,
+-        warn = True,
+-        silent = True,
+-    )
+-    if darwin:
+-        overriden_tools["gcc"] = "cc_wrapper.sh"
+-        overriden_tools["ar"] = _find_generic(repository_ctx, "libtool", "LIBTOOL", overriden_tools)
+-    auto_configure_warning_maybe(repository_ctx, "CC used: " + str(cc))
+-    tool_paths = _get_tool_paths(repository_ctx, overriden_tools)
+-
+-    # The parse_header tool needs to be a wrapper around the compiler as it has
+-    # to touch the output file.
+-    tool_paths["parse_headers"] = "cc_wrapper.sh"
+-    cc_toolchain_identifier = escape_string(get_env_var(
+-        repository_ctx,
+-        "CC_TOOLCHAIN_NAME",
+-        "local",
+-        False,
+-    ))
+-
+-    cc_wrapper_src = (
+-        "@bazel_tools//tools/cpp:osx_cc_wrapper.sh.tpl" if darwin else "@bazel_tools//tools/cpp:linux_cc_wrapper.sh.tpl"
+-    )
+-    repository_ctx.template(
+-        "cc_wrapper.sh",
+-        paths[cc_wrapper_src],
+-        {
+-            "%{cc}": escape_string(str(cc)),
+-            "%{env}": escape_string(get_env(repository_ctx)),
+-        },
+-    )
+-
+-    conly_opts = split_escaped(get_env_var(
+-        repository_ctx,
+-        "BAZEL_CONLYOPTS",
+-        "",
+-        False,
+-    ), ":")
+-
+-    cxx_opts = split_escaped(get_env_var(
+-        repository_ctx,
+-        "BAZEL_CXXOPTS",
+-        "-std=c++14",
+-        False,
+-    ), ":")
+-
+-    gold_or_lld_linker_path = (
+-        _find_linker_path(repository_ctx, cc, "lld", is_clang) or
+-        _find_linker_path(repository_ctx, cc, "gold", is_clang)
+-    )
+-    cc_path = repository_ctx.path(cc)
+-    if not str(cc_path).startswith(str(repository_ctx.path(".")) + "/"):
+-        # cc is outside the repository, set -B
+-        bin_search_flags = ["-B" + escape_string(str(cc_path.dirname))]
+-    else:
+-        # cc is inside the repository, don't set -B.
+-        bin_search_flags = []
+-    if not gold_or_lld_linker_path:
+-        ld_path = repository_ctx.path(tool_paths["ld"])
+-        if ld_path.dirname != cc_path.dirname:
+-            bin_search_flags.append("-B" + str(ld_path.dirname))
+-    force_linker_flags = []
+-    if gold_or_lld_linker_path:
+-        force_linker_flags.append("-fuse-ld=" + gold_or_lld_linker_path)
+-
+-    # TODO: It's unclear why these flags aren't added on macOS.
+-    if bin_search_flags and not darwin:
+-        force_linker_flags.extend(bin_search_flags)
+-    use_libcpp = darwin or bsd
+-    is_as_needed_supported = _is_linker_option_supported(
+-        repository_ctx,
+-        cc,
+-        force_linker_flags,
+-        "-Wl,-no-as-needed",
+-        "-no-as-needed",
+-    )
+-    is_push_state_supported = _is_linker_option_supported(
+-        repository_ctx,
+-        cc,
+-        force_linker_flags,
+-        "-Wl,--push-state",
+-        "--push-state",
+-    )
+-    if use_libcpp:
+-        bazel_default_libs = ["-lc++", "-lm"]
+-    else:
+-        bazel_default_libs = ["-lstdc++", "-lm"]
+-    if is_as_needed_supported and is_push_state_supported:
+-        # Do not link against C++ standard libraries unless they are actually
+-        # used.
+-        # We assume that --push-state support implies --pop-state support.
+-        bazel_linklibs_elements = [
+-            arg
+-            for lib in bazel_default_libs
+-            for arg in ["-Wl,--push-state,-as-needed", lib, "-Wl,--pop-state"]
+-        ]
+-    else:
+-        bazel_linklibs_elements = bazel_default_libs
+-    bazel_linklibs = ":".join(bazel_linklibs_elements)
+-    bazel_linkopts = ""
+-
+-    link_opts = split_escaped(get_env_var(
+-        repository_ctx,
+-        "BAZEL_LINKOPTS",
+-        bazel_linkopts,
+-        False,
+-    ), ":")
+-    link_libs = split_escaped(get_env_var(
+-        repository_ctx,
+-        "BAZEL_LINKLIBS",
+-        bazel_linklibs,
+-        False,
+-    ), ":")
+-    coverage_compile_flags, coverage_link_flags = _coverage_flags(repository_ctx, darwin)
+-    print_resource_dir_supported = _is_compiler_option_supported(
+-        repository_ctx,
+-        cc,
+-        "-print-resource-dir",
+-    )
+-    no_canonical_prefixes_opt = _get_no_canonical_prefixes_opt(repository_ctx, cc)
+-    builtin_include_directories = _uniq(
+-        _get_cxx_include_directories(repository_ctx, print_resource_dir_supported, cc, "-xc", conly_opts) +
+-        _get_cxx_include_directories(repository_ctx, print_resource_dir_supported, cc, "-xc++", cxx_opts) +
+-        _get_cxx_include_directories(
+-            repository_ctx,
+-            print_resource_dir_supported,
+-            cc,
+-            "-xc++",
+-            cxx_opts + ["-stdlib=libc++"],
+-        ) +
+-        _get_cxx_include_directories(
+-            repository_ctx,
+-            print_resource_dir_supported,
+-            cc,
+-            "-xc",
+-            no_canonical_prefixes_opt,
+-        ) +
+-        _get_cxx_include_directories(
+-            repository_ctx,
+-            print_resource_dir_supported,
+-            cc,
+-            "-xc++",
+-            cxx_opts + no_canonical_prefixes_opt,
+-        ) +
+-        _get_cxx_include_directories(
+-            repository_ctx,
+-            print_resource_dir_supported,
+-            cc,
+-            "-xc++",
+-            cxx_opts + no_canonical_prefixes_opt + ["-stdlib=libc++"],
+-        ) +
+-        # Always included in case the user has Xcode + the CLT installed, both
+-        # paths can be used interchangeably
+-        ["/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk"],
+-    )
+-
+-    generate_modulemap = is_clang
+-    if generate_modulemap:
+-        repository_ctx.file("module.modulemap", _generate_system_module_map(
+-            repository_ctx,
+-            builtin_include_directories,
+-            paths["@bazel_tools//tools/cpp:generate_system_module_map.sh"],
+-        ))
+-
+-    write_builtin_include_directory_paths(repository_ctx, cc, builtin_include_directories)
+-    repository_ctx.template(
+-        "BUILD",
+-        paths["@bazel_tools//tools/cpp:BUILD.tpl"],
+-        {
+-            "%{cc_toolchain_identifier}": cc_toolchain_identifier,
+-            "%{name}": cpu_value,
+-            "%{modulemap}": ("\":module.modulemap\"" if generate_modulemap else "None"),
+-            "%{cc_compiler_deps}": get_starlark_list([
+-                ":builtin_include_directory_paths",
+-                ":cc_wrapper",
+-            ]),
+-            "%{compiler}": escape_string(get_env_var(
+-                repository_ctx,
+-                "BAZEL_COMPILER",
+-                _get_compiler_name(repository_ctx, cc),
+-                False,
+-            )),
+-            "%{abi_version}": escape_string(get_env_var(
+-                repository_ctx,
+-                "ABI_VERSION",
+-                "local",
+-                False,
+-            )),
+-            "%{abi_libc_version}": escape_string(get_env_var(
+-                repository_ctx,
+-                "ABI_LIBC_VERSION",
+-                "local",
+-                False,
+-            )),
+-            "%{host_system_name}": escape_string(get_env_var(
+-                repository_ctx,
+-                "BAZEL_HOST_SYSTEM",
+-                "local",
+-                False,
+-            )),
+-            "%{target_libc}": "macosx" if darwin else escape_string(get_env_var(
+-                repository_ctx,
+-                "BAZEL_TARGET_LIBC",
+-                "local",
+-                False,
+-            )),
+-            "%{target_cpu}": escape_string(get_env_var(
+-                repository_ctx,
+-                "BAZEL_TARGET_CPU",
+-                cpu_value,
+-                False,
+-            )),
+-            "%{target_system_name}": escape_string(get_env_var(
+-                repository_ctx,
+-                "BAZEL_TARGET_SYSTEM",
+-                "local",
+-                False,
+-            )),
+-            "%{tool_paths}": ",\n        ".join(
+-                ['"%s": "%s"' % (k, v) for k, v in tool_paths.items()],
+-            ),
+-            "%{cxx_builtin_include_directories}": get_starlark_list(builtin_include_directories),
+-            "%{compile_flags}": get_starlark_list(
+-                [
+-                    "-fstack-protector",
+-                    # All warnings are enabled.
+-                    "-Wall",
+-                    # Enable a few more warnings that aren't part of -Wall.
+-                ] + ((
+-                    _add_compiler_option_if_supported(repository_ctx, cc, "-Wthread-safety") +
+-                    _add_compiler_option_if_supported(repository_ctx, cc, "-Wself-assign")
+-                )) + (
+-                    # Disable problematic warnings.
+-                    _add_compiler_option_if_supported(repository_ctx, cc, "-Wunused-but-set-parameter") +
+-                    # has false positives
+-                    _add_compiler_option_if_supported(repository_ctx, cc, "-Wno-free-nonheap-object") +
+-                    # Enable coloring even if there's no attached terminal. Bazel removes the
+-                    # escape sequences if --nocolor is specified.
+-                    _add_compiler_option_if_supported(repository_ctx, cc, "-fcolor-diagnostics")
+-                ) + [
+-                    # Keep stack frames for debugging, even in opt mode.
+-                    "-fno-omit-frame-pointer",
+-                ],
+-            ),
+-            "%{cxx_flags}": get_starlark_list(cxx_opts + _escaped_cplus_include_paths(repository_ctx)),
+-            "%{conly_flags}": get_starlark_list(conly_opts),
+-            "%{link_flags}": get_starlark_list(force_linker_flags + (
+-                ["-Wl,-no-as-needed"] if is_as_needed_supported else []
+-            ) + _add_linker_option_if_supported(
+-                repository_ctx,
+-                cc,
+-                force_linker_flags,
+-                "-Wl,-z,relro,-z,now",
+-                "-z",
+-            ) + (
+-                [
+-                    "-headerpad_max_install_names",
+-                ] if darwin else [
+-                    # Gold linker only? Can we enable this by default?
+-                    # "-Wl,--warn-execstack",
+-                    # "-Wl,--detect-odr-violations"
+-                ] + _add_compiler_option_if_supported(
+-                    # Have gcc return the exit code from ld.
+-                    repository_ctx,
+-                    cc,
+-                    "-pass-exit-codes",
+-                )
+-            ) + link_opts),
+-            "%{link_libs}": get_starlark_list(link_libs),
+-            "%{opt_compile_flags}": get_starlark_list(
+-                [
+-                    # No debug symbols.
+-                    # Maybe we should enable https://gcc.gnu.org/wiki/DebugFission for opt or
+-                    # even generally? However, that can't happen here, as it requires special
+-                    # handling in Bazel.
+-                    "-g0",
+-
+-                    # Conservative choice for -O
+-                    # -O3 can increase binary size and even slow down the resulting binaries.
+-                    # Profile first and / or use FDO if you need better performance than this.
+-                    "-O2",
+-
+-                    # Security hardening on by default.
+-                    # Conservative choice; -D_FORTIFY_SOURCE=2 may be unsafe in some cases.
+-                    "-D_FORTIFY_SOURCE=1",
+-
+-                    # Disable assertions
+-                    "-DNDEBUG",
+-
+-                    # Removal of unused code and data at link time (can this increase binary
+-                    # size in some cases?).
+-                    "-ffunction-sections",
+-                    "-fdata-sections",
+-                ],
+-            ),
+-            "%{opt_link_flags}": get_starlark_list(
+-                ["-Wl,-dead_strip"] if darwin else _add_linker_option_if_supported(
+-                    repository_ctx,
+-                    cc,
+-                    force_linker_flags,
+-                    "-Wl,--gc-sections",
+-                    "-gc-sections",
+-                ),
+-            ),
+-            "%{unfiltered_compile_flags}": get_starlark_list(
+-                _get_no_canonical_prefixes_opt(repository_ctx, cc) + [
+-                    # Make C++ compilation deterministic. Use linkstamping instead of these
+-                    # compiler symbols.
+-                    "-Wno-builtin-macro-redefined",
+-                    "-D__DATE__=\\\"redacted\\\"",
+-                    "-D__TIMESTAMP__=\\\"redacted\\\"",
+-                    "-D__TIME__=\\\"redacted\\\"",
+-                ],
+-            ),
+-            "%{dbg_compile_flags}": get_starlark_list(["-g"]),
+-            "%{coverage_compile_flags}": coverage_compile_flags,
+-            "%{coverage_link_flags}": coverage_link_flags,
+-            "%{supports_start_end_lib}": "True" if gold_or_lld_linker_path else "False",
+-        },
+-    )
++{@—¨“‰•£z@„‰¢‚“…~‡`‚„`†‰“…`ˆ…„…™{@Ã–—¨™‰‡ˆ£@òðñö@ãˆ…@Â©…“@Á¤£ˆ–™¢K@Á““@™‰‡ˆ£¢@™…¢…™¥…„K{@Ó‰ƒ…•¢…„@¤•„…™@£ˆ…@Á—ƒˆ…@Ó‰ƒ…•¢…k@å…™¢‰–•@òKð@M£ˆ…@Ó‰ƒ…•¢…]^{@¨–¤@”¨@•–£@¤¢…@£ˆ‰¢@†‰“…@…§ƒ…—£@‰•@ƒ–”—“‰•ƒ…@¦‰£ˆ@£ˆ…@Ó‰ƒ…•¢…K{@è–¤@”¨@–‚£‰•@@ƒ–—¨@–†@£ˆ…@Ó‰ƒ…•¢…@£{{@@@@ˆ££—zaa¦¦¦K—ƒˆ…K–™‡a“‰ƒ…•¢…¢aÓÉÃÅÕâÅ`òKð{{@ä•“…¢¢@™…˜¤‰™…„@‚¨@——“‰ƒ‚“…@“¦@–™@‡™……„@£–@‰•@¦™‰£‰•‡k@¢–†£¦™…{@„‰¢£™‰‚¤£…„@¤•„…™@£ˆ…@Ó‰ƒ…•¢…@‰¢@„‰¢£™‰‚¤£…„@–•@•@Áâ@Éâ@ÂÁâÉâk{@æÉãÈÖäã@æÁÙÙÁÕãÉÅâ@ÖÙ@ÃÖÕÄÉãÉÖÕâ@ÖÆ@ÁÕè@ÒÉÕÄk@…‰£ˆ…™@…§—™…¢¢@–™@‰”—“‰…„K{@â……@£ˆ…@Ó‰ƒ…•¢…@†–™@£ˆ…@¢—…ƒ‰†‰ƒ@“•‡¤‡…@‡–¥…™•‰•‡@—…™”‰¢¢‰–•¢@•„{@“‰”‰££‰–•¢@¤•„…™@£ˆ…@Ó‰ƒ…•¢…KÃ–•†‰‡¤™‰•‡@£ˆ…@ÃNN@£––“ƒˆ‰•@–•@ä•‰§@—“£†–™”¢K“–„M@@@@|‚©…“m£––“¢aa£––“¢aƒ——z“‰‚mƒƒmƒ–•†‰‡¤™…K‚©“k@@@@¤£–mƒ–•†‰‡¤™…m†‰“k@@@@¤£–mƒ–•†‰‡¤™…m¦™•‰•‡k@@@@¤£–mƒ–•†‰‡¤™…m¦™•‰•‡m”¨‚…k@@@@…¢ƒ—…m¢£™‰•‡k@@@@…§…ƒ¤£…k@@@@‡…£m…•¥m¥™k@@@@‡…£m¢£™“™’m“‰¢£k@@@@™…¢–“¥…m“‚…“¢k@@@@¢—“‰£m…¢ƒ—…„k@@@@¦ˆ‰ƒˆk@@@@¦™‰£…m‚¤‰“£‰•m‰•ƒ“¤„…m„‰™…ƒ£–™¨m—£ˆ¢k]„…†@m¤•‰˜M‰£…™‚“…]z@@@@Ù…”–¥…@„¤—“‰ƒ£…¢@†™–”@@“‰¢£K@@@@¤•‰˜¤…m…“…”…•£¢@~@À…“…”…•£z@Õ–•…@†–™@…“…”…•£@‰•@‰£…™‚“…Ð@@@@™…£¤™•@¤•‰˜¤…m…“…”…•£¢K’…¨¢M]„…†@m‡…•…™£…m¢¨¢£…”m”–„¤“…m”—M™…—–¢‰£–™¨mƒ£§k@„‰™¢k@¢ƒ™‰—£m—£ˆ]z@@@@{@©aÖâz@ã‡@¢ƒ™‰—£@¢@ÁâÃÉÉ@‚…†–™…@…§…ƒ¤£‰•‡@@@@–¢m•”…@~@™…—–¢‰£–™¨mƒ£§K–¢K•”…K“–¦…™M]@@@@‰†@©a–¢@‰•@–¢m•”…@–™@–¢aóùð@‰•@–¢m•”…@–™@–¢m•”…@~~@–¢óùðz@@@@@@@@£‡m™…¢¤“£@~@™…—–¢‰£–™¨mƒ£§K…§…ƒ¤£…M­ƒˆ£‡k@`£ƒk@ÉâÖøøõù`ñk@¢ƒ™‰—£m—£ˆ½]@@@@@@@@‰†@£‡m™…¢¤“£K™…£¤™•mƒ–„…@Z~@ðz@@@@@@@@@@@@¤£–mƒ–•†‰‡¤™…m¦™•‰•‡MÆ‰“…„@£–@£‡@¢ƒ™‰—£@¢@ÁâÃÉÉz@@N@£‡m™…¢¤“£K¢£„…™™]@@@@™…£¤™•@…§…ƒ¤£…M™…—–¢‰£–™¨mƒ£§k@­¢ƒ™‰—£m—£ˆ½@N@„‰™¢]„…†@m—™…—™…m‰•ƒ“¤„…m—£ˆM™…—–mƒ£§k@—£ˆ]z@@@@Ù…¢–“¥…@‰•ƒ“¤„…@—£ˆ@‚…†–™…@–¤£—¤££‰•‡@‰£@‰•£–@£ˆ…@ƒ™–¢¢£––“K@@@@Á™‡¢z@@@@@@™…—–mƒ£§z@™…—–¢‰£–™¨mƒ£§@–‚‘…ƒ£K@@@@@@—£ˆz@•@‰•ƒ“¤„…@—£ˆ@£–@‚…@™…¢–“¥…„K@@@@Ù…£¤™•¢z@@@@@@Ù…¢–“¥…„@‰•ƒ“¤„…@—£ˆK@Ù…¢¤“£‰•‡@—£ˆ@‰¢@‚¢–“¤£…@‰†@‰£@‰¢@–¤£¢‰„…@£ˆ…@@@@@@™…—–¢‰£–™¨@•„@™…“£‰¥…@–£ˆ…™¦‰¢…K@@@@@@@@™…—–m™––£@~@¢£™M™…—–mƒ£§K—£ˆMK]]@@@@{@æ…}™…@–•@äÕÉçk@¢–@£ˆ…@—£ˆ@„…“‰”‰£…™@‰¢@}a}K@@@@™…—–m™––£@N~@a@@@@—£ˆ@~@¢£™M™…—–mƒ£§K—£ˆM—£ˆ]]@@@@‰†@—£ˆK¢£™£¢¦‰£ˆM™…—–m™––£]z@@@@@@@@™…£¤™•@—£ˆ­“…•M™…—–m™––£]z½@@@@™…£¤™•@—£ˆ„…†@m‡…£m¥“¤…M‰£]z@@@@Ã–•¥…™£@y‰£y@‰•@¢…™‰“‰©…„@—™–£–‚¤†@†–™”£K@@@@‰†@£¨—…M‰£]@~~@‰•£z@@@@@@@@™…£¤™•@¢£™M‰£]@@@@…“‰†@£¨—…M‰£]@~~@‚––“z@@@@@@@@™…£¤™•@£™¤…@‰†@‰£@…“¢…@†“¢…@@@@…“¢…z@@@@@@@@™…£¤™•@àl¢à@l@‰£„…†@m†‰•„m£––“M™…—–¢‰£–™¨mƒ£§k@£––“k@–¥…™™‰„…•m£––“¢]z@@@@Æ‰•„@@£––“@†–™@™…—–¢‰£–™¨k@£’‰•‡@–¥…™™‰„„…•@£––“¢@‰•£–@ƒƒ–¤•£K@@@@‰†@£––“@‰•@–¥…™™‰„…•m£––“¢z@@@@@@@@™…£¤™•@–¥…™™‰„…•m£––“¢­£––“½@@@@™…£¤™•@¦ˆ‰ƒˆM™…—–¢‰£–™¨mƒ£§k@£––“k@a¤¢™a‚‰•a@N@£––“]„…†@m‡…£m£––“m—£ˆ¢M™…—–¢‰£–™¨mƒ£§k@–¥…™™‰„…•m£––“¢]z@@@@Ã–”—¤£…@£ˆ…@l`…¢ƒ—…„@—£ˆ@£–@£ˆ…@¥™‰–¤¢@£––“¢@@@@™…£¤™•@„‰ƒ£MÀ@@@@@@@@’z@…¢ƒ—…m¢£™‰•‡Mm†‰•„m£––“M™…—–¢‰£–™¨mƒ£§k@’k@–¥…™™‰„…•m£––“¢]]@@@@@@@@†–™@’@‰•@­@@@@@@@@@@@@™k@@@@@@@@@@@@“„k@@@@@@@@@@@@““¥”`ƒ–¥k@@@@@@@@@@@@““¥”`—™–†„£k@@@@@@@@@@@@ƒ——k@@@@@@@@@@@@‡ƒƒk@@@@@@@@@@@@„¦—k@@@@@@@@@@@@‡ƒ–¥k@@@@@@@@@@@@•”k@@@@@@@@@@@@–‚‘ƒ–—¨k@@@@@@@@@@@@–‚‘„¤”—k@@@@@@@@@@@@¢£™‰—k@@@@@@@@½@@@@ÐK‰£…”¢M]]„…†@m…¢ƒ—…„mƒ—“¤¢m‰•ƒ“¤„…m—£ˆ¢M™…—–¢‰£–™¨mƒ£§]z@@@@ä¢…@[ÀÃ×ÓäâmÉÕÃÓäÄÅm×ÁãÈÐ@£–@ƒ–”—¤£…@£ˆ…@l`…¢ƒ—…„@“‰¢£@–†@†“‡¢@†–™@ƒ§§†“‡K@@@@‰†@Ã×ÓäâmÉÕÃÓäÄÅm×ÁãÈ@‰•@™…—–¢‰£–™¨mƒ£§K–¢K…•¥‰™–•z@@@@@@@@™…¢¤“£@~@­½@@@@@@@@†–™@—@‰•@™…—–¢‰£–™¨mƒ£§K–¢K…•¥‰™–•­Ã×ÓäâmÉÕÃÓäÄÅm×ÁãÈ½K¢—“‰£Mz]z@@@@@@@@@@@@—@~@…¢ƒ—…m¢£™‰•‡M¢£™M™…—–¢‰£–™¨mƒ£§K—£ˆM—]]]@@{@Õ–™”“‰©…@£ˆ…@—£ˆ@@@@@@@@@@@@™…¢¤“£K——…•„M`É@N@—]@@@@@@@@™…£¤™•@™…¢¤“£@@@@…“¢…z@@@@@@@@™…£¤™•@­½mÉÕÃmÄÉÙmÔÁÙÒÅÙmÂÅÇÉÕ@~@{‰•ƒ“¤„…@LKKKn{@Öâç@„„@@M†™”…¦–™’@„‰™…ƒ£–™¨]@£@£ˆ…@…•„@–†@“‰•…k@¢£™‰—@‰£KmÖâçmÆÙÁÔÅæÖÙÒmâäÆÆÉç@~@@M†™”…¦–™’@„‰™…ƒ£–™¨]mÖâçmÆÙÁÔÅæÖÙÒmâäÆÆÉçmÓÅÕ@~@“…•MmÖâçmÆÙÁÔÅæÖÙÒmâäÆÆÉç]„…†@mƒ§§m‰•ƒmƒ–•¥…™£M—£ˆ]z@@@@Ã–•¥…™£@—£ˆ@™…£¤™•…„@‚¨@ƒƒ@`Å@§ƒNN@‰•@@ƒ–”—“…£…@—£ˆK@Ä–…¢•}£@l`…¢ƒ—…@£ˆ…@—£ˆZ@@@@—£ˆ@~@—£ˆK¢£™‰—M]@@@@‰†@—£ˆK…•„¢¦‰£ˆMmÖâçmÆÙÁÔÅæÖÙÒmâäÆÆÉç]z@@@@@@@@—£ˆ@~@—£ˆ­z`mÖâçmÆÙÁÔÅæÖÙÒmâäÆÆÉçmÓÅÕ½K¢£™‰—M]@@@@™…£¤™•@—£ˆ„…†@m‡…£mƒ§§m‰•ƒ“¤„…m„‰™…ƒ£–™‰…¢M™…—–¢‰£–™¨mƒ£§k@—™‰•£m™…¢–¤™ƒ…m„‰™m¢¤——–™£…„k@ƒƒk@“•‡m†“‡k@„„‰£‰–•“m†“‡¢@~@­½]z@@@@Ã–”—¤£…@£ˆ…@“‰¢£@–†@ÃNN@‰•ƒ“¤„…@„‰™…ƒ£–™‰…¢K@@@@™…¢¤“£@~@™…—–¢‰£–™¨mƒ£§K…§…ƒ¤£…M­ƒƒk@`Åk@“•‡m†“‡k@`k@`¥½@N@„„‰£‰–•“m†“‡¢]@@@@‰•„…§ñ@~@™…¢¤“£K¢£„…™™K†‰•„MmÉÕÃmÄÉÙmÔÁÙÒÅÙmÂÅÇÉÕ]@@@@‰†@‰•„…§ñ@~~@`ñz@@@@@@@@™…£¤™•@­½@@@@‰•„…§ñ@~@™…¢¤“£K¢£„…™™K†‰•„Mà•k@‰•„…§ñ]@@@@‰†@‰•„…§ñ@~~@`ñz@@@@@@@@™…£¤™•@­½@@@@‰•„…§ò@~@™…¢¤“£K¢£„…™™K™†‰•„Mà•@]@@@@‰†@‰•„…§ò@~~@`ñ@–™@‰•„…§ò@L@‰•„…§ñz@@@@@@@@™…£¤™•@­½@@@@‰•„…§ò@~@™…¢¤“£K¢£„…™™K†‰•„Mà•k@‰•„…§ò@N@ñ]@@@@‰†@‰•„…§ò@~~@`ñz@@@@@@@@‰•ƒm„‰™¢@~@™…¢¤“£K¢£„…™™­‰•„…§ñ@N@ñz½@@@@…“¢…z@@@@@@@@‰•ƒm„‰™¢@~@™…¢¤“£K¢£„…™™­‰•„…§ñ@N@ñz‰•„…§ò½K¢£™‰—M]@@@@‰•ƒm„‰™…ƒ£–™‰…¢@~@­@@@@@@@@m—™…—™…m‰•ƒ“¤„…m—£ˆM™…—–¢‰£–™¨mƒ£§k@mƒ§§m‰•ƒmƒ–•¥…™£M—]]@@@@@@@@†–™@—@‰•@‰•ƒm„‰™¢K¢—“‰£Mà•]@@@@½@@@@‰†@—™‰•£m™…¢–¤™ƒ…m„‰™m¢¤——–™£…„z@@@@@@@@™…¢–¤™ƒ…m„‰™@~@™…—–¢‰£–™¨mƒ£§K…§…ƒ¤£…M@@@@@@@@@@@@­ƒƒk@`—™‰•£`™…¢–¤™ƒ…`„‰™½@N@„„‰£‰–•“m†“‡¢k@@@@@@@@]K¢£„–¤£K¢£™‰—M]@N@a¢ˆ™…@@@@@@@@‰•ƒm„‰™…ƒ£–™‰…¢K——…•„Mm—™…—™…m‰•ƒ“¤„…m—£ˆM™…—–¢‰£–™¨mƒ£§k@™…¢–¤™ƒ…m„‰™]]@@@@™…£¤™•@‰•ƒm„‰™…ƒ£–™‰…¢„…†@m‰¢mƒ–”—‰“…™m–—£‰–•m¢¤——–™£…„M™…—–¢‰£–™¨mƒ£§k@ƒƒk@–—£‰–•]z@@@@Ãˆ…ƒ’¢@£ˆ£@y–—£‰–•y@‰¢@¢¤——–™£…„@‚¨@£ˆ…@Ã@ƒ–”—‰“…™K@Ä–…¢•}£@l`…¢ƒ—…@£ˆ…@–—£‰–•K@@@@™…¢¤“£@~@™…—–¢‰£–™¨mƒ£§K…§…ƒ¤£…M­@@@@@@@@ƒƒk@@@@@@@@–—£‰–•k@@@@@@@@`–k@@@@@@@@a„…¥a•¤““k@@@@@@@@`ƒk@@@@@@@@¢£™M™…—–¢‰£–™¨mƒ£§K—£ˆM£––“¢aƒ——a…”—£¨Kƒƒ]]k@@@@½]@@@@™…£¤™•@™…¢¤“£K¢£„…™™K†‰•„M–—£‰–•]@~~@`ñ„…†@m‰¢m“‰•’…™m–—£‰–•m¢¤——–™£…„M™…—–¢‰£–™¨mƒ£§k@ƒƒk@†–™ƒ…m“‰•’…™m†“‡¢k@–—£‰–•k@—££…™•]z@@@@Ãˆ…ƒ’¢@£ˆ£@y–—£‰–•y@‰¢@¢¤——–™£…„@‚¨@£ˆ…@Ã@“‰•’…™K@Ä–…¢•}£@l`…¢ƒ—…@£ˆ…@–—£‰–•K@@@@™…¢¤“£@~@™…—–¢‰£–™¨mƒ£§K…§…ƒ¤£…M­ƒƒ½@N@†–™ƒ…m“‰•’…™m†“‡¢@N@­@@@@@@@@–—£‰–•k@@@@@@@@`–k@@@@@@@@a„…¥a•¤““k@@@@@@@@¢£™M™…—–¢‰£–™¨mƒ£§K—£ˆM£––“¢aƒ——a…”—£¨Kƒƒ]]k@@@@½]@@@@™…£¤™•@™…¢¤“£K¢£„…™™K†‰•„M—££…™•]@~~@`ñ„…†@m†‰•„m“‰•’…™m—£ˆM™…—–¢‰£–™¨mƒ£§k@ƒƒk@“‰•’…™k@‰¢mƒ“•‡]z@@@@Ãˆ…ƒ’¢@‰†@@‡‰¥…•@“‰•’…™@‰¢@¢¤——–™£…„@‚¨@£ˆ…@Ã@ƒ–”—‰“…™K@@@@Á™‡¢z@@@@@@™…—–¢‰£–™¨mƒ£§z@™…—–¢‰£–™¨mƒ£§K@@@@@@ƒƒz@—£ˆ@£–@£ˆ…@Ã@ƒ–”—‰“…™K@@@@@@“‰•’…™z@“‰•’…™@£–@†‰•„@@@@@@‰¢mƒ“•‡z@¦ˆ…£ˆ…™@£ˆ…@ƒ–”—‰“…™@‰¢@’•–¦•@£–@‚…@ƒ“•‡@@@@Ù…£¤™•¢z@@@@@@â£™‰•‡@£–@—¤£@¢@¥“¤…@£–@`†¤¢…`“„~@†“‡k@–™@Õ–•…@‰†@“‰•’…™@ƒ–¤“„•}£@‚…@†–¤•„K@@@@@@@@™…¢¤“£@~@™…—–¢‰£–™¨mƒ£§K…§…ƒ¤£…M­@@@@@@@@ƒƒk@@@@@@@@¢£™M™…—–¢‰£–™¨mƒ£§K—£ˆM£––“¢aƒ——a…”—£¨Kƒƒ]]k@@@@@@@@`–k@@@@@@@@a„…¥a•¤““k@@@@@@@@{@â–”…@”ƒÖâ@ƒ“•‡@¥…™¢‰–•¢@„–•}£@†‰“@¦ˆ…•@¢…££‰•‡@`†¤¢…`“„~‡–“„k@„„‰•‡@@@@@@@@{@£ˆ…¢…@“‰•…¢@£–@†–™ƒ…@‰£@£–K@ãˆ‰¢@“¢–@”…•¢@£ˆ£@¦…@¦‰““@•–£@„…£…ƒ£@@@@@@@@{@‡–“„@¦ˆ…•@–•“¨@@¥…™¨@–“„@M¨…™@òðñð@•„@–“„…™]@‰¢@—™…¢…•£K@@@@@@@@`æ“k``¢£™£`“‰‚k@@@@@@@@`æ“k``…•„`“‰‚k@@@@@@@@`†¤¢…`“„~@N@“‰•’…™k@@@@@@@@`¥k@@@@½]@@@@‰†@™…¢¤“£K™…£¤™•mƒ–„…@Z~@ðz@@@@@@@@™…£¤™•@Õ–•…@@@@‰†@•–£@‰¢mƒ“•‡z@@@@@@@@™…£¤™•@“‰•’…™@@@@{@Å§£™ƒ£@“‰•’…™@—£ˆ@†™–”z@@@@{@a¤¢™a‚‰•aƒ“•‡@KKK@@@@{@a¤¢™a‚‰•a“„K““„@`—‰…@`©@KKK@@@@“‰•’…™mƒ–””•„@~@™…¢¤“£K¢£„…™™K¢—“‰£“‰•…¢M]­`ñ½@@@@™…£¤™•@“‰•’…™mƒ–””•„K¢£™‰—M]K¢—“‰£M@]­ð½K¢£™‰—Mà}]„…†@m„„mƒ–”—‰“…™m–—£‰–•m‰†m¢¤——–™£…„M™…—–¢‰£–™¨mƒ£§k@ƒƒk@–—£‰–•]z@@@@Ù…£¤™•¢@y­–—£‰–•½y@‰†@¢¤——–™£…„k@y­½y@–£ˆ…™¦‰¢…K@Ä–…¢•}£@l`…¢ƒ—…@£ˆ…@–—£‰–•K@@@@™…£¤™•@­–—£‰–•½@‰†@m‰¢mƒ–”—‰“…™m–—£‰–•m¢¤——–™£…„M™…—–¢‰£–™¨mƒ£§k@ƒƒk@–—£‰–•]@…“¢…@­½„…†@m„„m“‰•’…™m–—£‰–•m‰†m¢¤——–™£…„M™…—–¢‰£–™¨mƒ£§k@ƒƒk@†–™ƒ…m“‰•’…™m†“‡¢k@–—£‰–•k@—££…™•]z@@@@Ù…£¤™•¢@y­–—£‰–•½y@‰†@¢¤——–™£…„k@y­½y@–£ˆ…™¦‰¢…K@Ä–…¢•}£@l`…¢ƒ—…@£ˆ…@–—£‰–•K@@@@™…£¤™•@­–—£‰–•½@‰†@m‰¢m“‰•’…™m–—£‰–•m¢¤——–™£…„M™…—–¢‰£–™¨mƒ£§k@ƒƒk@†–™ƒ…m“‰•’…™m†“‡¢k@–—£‰–•k@—££…™•]@…“¢…@­½„…†@m‡…£m•–mƒ•–•‰ƒ“m—™…†‰§…¢m–—£M™…—–¢‰£–™¨mƒ£§k@ƒƒ]z@@@@{@É†@£ˆ…@ƒ–”—‰“…™@¢–”…£‰”…¢@™…¦™‰£…¢@—£ˆ¢@‰•@£ˆ…@K„@†‰“…¢@¦‰£ˆ–¤£@¢¨”“‰•’¢@@@@{@M‰…@¦ˆ…•@£ˆ…¨}™…@¢ˆ–™£…™]k@‰£@ƒ–•†¤¢…¢@Â©…“}¢@“–‡‰ƒ@†–™@¥…™‰†¨‰•‡@““@@@@{@{‰•ƒ“¤„…„@ˆ…„…™@†‰“…¢@™…@“‰¢£…„@¢@‰•—¤£¢@£–@£ˆ…@ƒ£‰–•K@@@@{@ãˆ…@}`†•–`ƒ•–•‰ƒ“`¢¨¢£…”`ˆ…„…™¢}@¢ˆ–¤“„@‚…@…•–¤‡ˆk@‚¤£@ƒ“•‡@„–…¢@•–£@@@@{@¢¤——–™£@‰£k@¢–@¦…@“¢–@£™¨@}`•–`ƒ•–•‰ƒ“`—™…†‰§…¢}@‰†@†‰™¢£@–—£‰–•@„–…¢@@@@{@•–£@¦–™’K@@@@–—£@~@m„„mƒ–”—‰“…™m–—£‰–•m‰†m¢¤——–™£…„M@@@@@@@@™…—–¢‰£–™¨mƒ£§k@@@@@@@@ƒƒk@@@@@@@@`†•–`ƒ•–•‰ƒ“`¢¨¢£…”`ˆ…„…™¢k@@@@]@@@@‰†@“…•M–—£]@~~@ðz@@@@@@@@™…£¤™•@m„„mƒ–”—‰“…™m–—£‰–•m‰†m¢¤——–™£…„M@@@@@@@@@@@@™…—–¢‰£–™¨mƒ£§k@@@@@@@@@@@@ƒƒk@@@@@@@@@@@@`•–`ƒ•–•‰ƒ“`—™…†‰§…¢k@@@@@@@@]@@@@™…£¤™•@–—£„…†@‡…£m…•¥M™…—–¢‰£–™¨mƒ£§]z@@@@Ã–•¥…™£@£ˆ…@…•¥‰™–•”…•£@‰•@@“‰¢£@–†@…§—–™£@‰†@‰•@È–”…‚™…¦K@Ä–…¢•}£@l`…¢ƒ—…@£ˆ…@™…¢¤“£Z@@@@…•¥@~@™…—–¢‰£–™¨mƒ£§K–¢K…•¥‰™–•@@@@‰†@ÈÖÔÅÂÙÅæmÙäÂèm×ÁãÈ@‰•@…•¥z@@@@@@@@™…£¤™•@à•K‘–‰•M­@@@@@@@@@@@@…§—–™£@l¢~}l¢}@l@M’k@…•¥­’½K™…—“ƒ…M}k@}àà}}]]@@@@@@@@@@@@†–™@’@‰•@…•¥@@@@@@@@@@@@‰†@’@Z~@m@•„@’K†‰•„MK]@~~@`ñ@@@@@@@@½]@@@@…“¢…z@@@@@@@@™…£¤™•@„…†@mƒ–¥…™‡…m†“‡¢M™…—–¢‰£–™¨mƒ£§k@„™¦‰•]z@@@@¤¢…m““¥”mƒ–¥@~@ñ@~~@‡…£m…•¥m¥™M@@@@@@@@™…—–¢‰£–™¨mƒ£§k@@@@@@@@ÂÁéÅÓmäâÅmÓÓåÔmÕÁãÉåÅmÃÖåÅÙÁÇÅk@@@@@@@@„…†¤“£@~@ðk@@@@@@@@…•‚“…m¦™•‰•‡@~@Æ“¢…k@@@@]@@@@‰†@„™¦‰•@–™@¤¢…m““¥”mƒ–¥z@@@@@@@@ƒ–”—‰“…m†“‡¢@~@}`†—™–†‰“…`‰•¢£™`‡…•…™£…k@@`†ƒ–¥…™‡…`”——‰•‡}@@@@@@@@“‰•’m†“‡¢@~@}`†—™–†‰“…`‰•¢£™`‡…•…™£…}@@@@…“¢…z@@@@@@@@{@‡ƒƒ@™…˜¤‰™…¢@``ƒ–¥…™‡…@‚…‰•‡@—¢¢…„@†–™@ƒ–”—‰“£‰–•@•„@“‰•’‰•‡@@@@@@@@{@ˆ££—¢zaa‡ƒƒK‡•¤K–™‡a–•“‰•…„–ƒ¢a‡ƒƒaÉ•¢£™¤”…•££‰–•`Ö—£‰–•¢Kˆ£”“{É•¢£™¤”…•££‰–•`Ö—£‰–•¢@@@@@@@@ƒ–”—‰“…m†“‡¢@~@}``ƒ–¥…™‡…}@@@@@@@@“‰•’m†“‡¢@~@}``ƒ–¥…™‡…}@@@@™…£¤™•@ƒ–”—‰“…m†“‡¢k@“‰•’m†“‡¢„…†@m‰¢mƒ“•‡M™…—–¢‰£–™¨mƒ£§k@ƒƒ]z@@@@™…£¤™•@ƒ“•‡@‰•@™…—–¢‰£–™¨mƒ£§K…§…ƒ¤£…M­ƒƒk@`¥½]K¢£„…™™„…†@m‰¢m‡ƒƒM™…—–¢‰£–™¨mƒ£§k@ƒƒ]z@@@@{@ÇÃÃ}¢@¥…™¢‰–•@–¤£—¤£@¤¢…¢@£ˆ…@‚¢…•”…@–†@™‡¥­ð½@¢@£ˆ…@—™–‡™”@•”…z@@@@{@ˆ££—¢zaa‡ƒƒK‡•¤K–™‡a‡‰£ao—~‡ƒƒK‡‰£^~‚“–‚^†~‡ƒƒa‡ƒƒKƒƒ^ˆ~ñõøôöññö÷ùõñƒñ‚ùõôðóòò†‚ñù‚…öøù„ö„ð÷†ƒ^ˆ‚~ÈÅÁÄ{“ø÷òø@@@@ƒƒm¢£„–¤£@~@™…—–¢‰£–™¨mƒ£§K…§…ƒ¤£…M­ƒƒk@``¥…™¢‰–•½]K¢£„–¤£@@@@™…£¤™•@ƒƒm¢£„–¤£K¢£™£¢¦‰£ˆM‡ƒƒ@]@–™@ƒƒm¢£„–¤£K¢£™£¢¦‰£ˆM‡ƒƒ`]„…†@m‡…£mƒ–”—‰“…™m•”…M™…—–¢‰£–™¨mƒ£§k@ƒƒ]z@@@@‰†@m‰¢mƒ“•‡M™…—–¢‰£–™¨mƒ£§k@ƒƒ]z@@@@@@@@™…£¤™•@ƒ“•‡@@@@‰†@m‰¢m‡ƒƒM™…—–¢‰£–™¨mƒ£§k@ƒƒ]z@@@@@@@@™…£¤™•@‡ƒƒ@@@@™…£¤™•@ƒ–”—‰“…™„…†@m†‰•„m‡…•…™‰ƒM™…—–¢‰£–™¨mƒ£§k@•”…k@…•¥m•”…k@–¥…™™‰„…•m£––“¢k@¦™•@~@Æ“¢…k@¢‰“…•£@~@Æ“¢…]z@@@@Æ‰•„@@‡…•…™‰ƒ@ÃNN@£––“ƒˆ‰•@£––“K@Ä–…¢•}£@l`…¢ƒ—…@£ˆ…@™…¢¤“£K@@@@‰†@•”…@‰•@–¥…™™‰„…•m£––“¢z@@@@@@@@™…£¤™•@–¥…™™‰„…•m£––“¢­•”…½@@@@™…¢¤“£@~@•”…@@@@…•¥m¥“¤…@~@™…—–¢‰£–™¨mƒ£§K–¢K…•¥‰™–•K‡…£M…•¥m•”…]@@@@…•¥m¥“¤…m¦‰£ˆm—™…•@~@@@@@‰†@…•¥m¥“¤…@Z~@Õ–•…z@@@@@@@@…•¥m¥“¤…@~@…•¥m¥“¤…K¢£™‰—M]@@@@@@@@‰†@…•¥m¥“¤…z@@@@@@@@@@@@™…¢¤“£@~@…•¥m¥“¤…@@@@@@@@@@@@…•¥m¥“¤…m¦‰£ˆm—™…•@~@@Ml¢]@l@…•¥m¥“¤…@@@@‰†@™…¢¤“£K¢£™£¢¦‰£ˆMa]z@@@@@@@@{@Á‚¢–“¤£…@—£ˆk@”¨‚…@¦…@¢ˆ–¤“„@”’…@£ˆ‰¢@¢¤——–™£…„@‚¨@–¤™@¦ˆ‰ƒˆ@†¤•ƒ£‰–•K@@@@@@@@™…£¤™•@™…¢¤“£@@@@™…¢¤“£@~@™…—–¢‰£–™¨mƒ£§K¦ˆ‰ƒˆM™…¢¤“£]@@@@‰†@™…¢¤“£@~~@Õ–•…z@@@@@@@@”¢‡@~@MÃ••–£@†‰•„@l¢@–™@l¢l¢^@…‰£ˆ…™@ƒ–™™…ƒ£@¨–¤™@—£ˆ@–™@¢…£@£ˆ…@l¢@N@@@@@@@@@@@@@@@@…•¥‰™–•”…•£@¥™‰‚“…]@l@M•”…k@…•¥m•”…k@…•¥m¥“¤…m¦‰£ˆm—™…•k@…•¥m•”…]@@@@@@@@‰†@¦™•z@@@@@@@@@@@@‰†@•–£@¢‰“…•£z@@@@@@@@@@@@@@@@¤£–mƒ–•†‰‡¤™…m¦™•‰•‡M”¢‡]@@@@@@@@…“¢…z@@@@@@@@@@@@¤£–mƒ–•†‰‡¤™…m†‰“M”¢‡]@@@@™…£¤™•@™…¢¤“£„…†@†‰•„mƒƒM™…—–¢‰£–™¨mƒ£§k@–¥…™™‰„…•m£––“¢]z@@@@ƒƒ@~@m†‰•„m‡…•…™‰ƒM™…—–¢‰£–™¨mƒ£§k@‡ƒƒk@ÃÃk@–¥…™™‰„…•m£––“¢]@@@@‰†@m‰¢mƒ“•‡M™…—–¢‰£–™¨mƒ£§k@ƒƒ]z@@@@@@@@{@É†@ƒ“•‡@‰¢@™¤•@£ˆ™–¤‡ˆ@@¢¨”“‰•’@¦‰£ˆ@`•–`ƒ•–•‰ƒ“`—™…†‰§…¢k@‰£@„–…¢@@@@@@@@{@•–£@†‰•„@‰£¢@–¦•@‰•ƒ“¤„…@„‰™…ƒ£–™¨k@¦ˆ‰ƒˆ@‰•ƒ“¤„…¢@£ˆ…@ˆ…„…™¢@†–™@@@@@@@@{@“‰‚ƒNNK@Ù…¢–“¥‰•‡@£ˆ…@—–£…•£‰“@¢¨”“‰•’@ˆ…™…@—™…¥…•£¢@£ˆ‰¢K@@@@@@@@™…¢¤“£@~@™…—–¢‰£–™¨mƒ£§K…§…ƒ¤£…M­™…„“‰•’k@`†k@ƒƒ½]@@@@@@@@‰†@™…¢¤“£K™…£¤™•mƒ–„…@~~@ðz@@@@@@@@@@@@™…£¤™•@™…¢¤“£K¢£„–¤£K¢£™‰—M]@@@@™…£¤™•@ƒƒ„…†@ƒ–•†‰‡¤™…m¤•‰§m£––“ƒˆ‰•M™…—–¢‰£–™¨mƒ£§k@ƒ—¤m¥“¤…k@–¥…™™‰„…•m£––“¢]z@@@@Ã–•†‰‡¤™…@ÃNN@£––“ƒˆ‰•@–•@ä•‰§@—“£†–™”¢K@@@@—£ˆ¢@~@™…¢–“¥…m“‚…“¢M™…—–¢‰£–™¨mƒ£§k@­@@@@@@@@|‚©…“m£––“¢aa£––“¢aƒ——zÂäÉÓÄK£—“k@@@@@@@@|‚©…“m£––“¢aa£––“¢aƒ——z‡…•…™£…m¢¨¢£…”m”–„¤“…m”—K¢ˆk@@@@@@@@|‚©…“m£––“¢aa£––“¢aƒ——z™”…‚‰mƒƒm£––“ƒˆ‰•mƒ–•†‰‡K‚©“k@@@@@@@@|‚©…“m£––“¢aa£––“¢aƒ——z¤•‰§mƒƒm£––“ƒˆ‰•mƒ–•†‰‡K‚©“k@@@@@@@@|‚©…“m£––“¢aa£––“¢aƒ——z“‰•¤§mƒƒm¦™——…™K¢ˆK£—“k@@@@@@@@|‚©…“m£––“¢aa£––“¢aƒ——z–¢§mƒƒm¦™——…™K¢ˆK£—“k@@@@½]@@@@™…—–¢‰£–™¨mƒ£§K¢¨”“‰•’M@@@@@@@@—£ˆ¢­|‚©…“m£––“¢aa£––“¢aƒ——z¤•‰§mƒƒm£––“ƒˆ‰•mƒ–•†‰‡K‚©“½k@@@@@@@@ƒƒm£––“ƒˆ‰•mƒ–•†‰‡K‚©“k@@@@]@@@@™…—–¢‰£–™¨mƒ£§K¢¨”“‰•’M@@@@@@@@—£ˆ¢­|‚©…“m£––“¢aa£––“¢aƒ——z™”…‚‰mƒƒm£––“ƒˆ‰•mƒ–•†‰‡K‚©“½k@@@@@@@@™”…‚‰mƒƒm£––“ƒˆ‰•mƒ–•†‰‡K‚©“k@@@@]@@@@™…—–¢‰£–™¨mƒ£§K†‰“…M£––“¢aƒ——a…”—£¨Kƒƒk@‰•£@”‰•M]@ÀÐ]@@@@„™¦‰•@~@ƒ—¤m¥“¤…K¢£™£¢¦‰£ˆM„™¦‰•]@@@@‚¢„@~@ƒ—¤m¥“¤…@~~@†™……‚¢„@–™@ƒ—¤m¥“¤…@~~@–—…•‚¢„@@@@ƒƒ@~@†‰•„mƒƒM™…—–¢‰£–™¨mƒ£§k@–¥…™™‰„…•m£––“¢]@@@@‰¢mƒ“•‡@~@m‰¢mƒ“•‡M™…—–¢‰£–™¨mƒ£§k@ƒƒ]@@@@–¥…™™‰„…•m£––“¢@~@„‰ƒ£M–¥…™™‰„…•m£––“¢]@@@@–¥…™™‰„…•m£––“¢­‡ƒƒ½@~@ƒƒ@@@@–¥…™™‰„…•m£––“¢­‡ƒ–¥½@~@m†‰•„m‡…•…™‰ƒM@@@@@@@@™…—–¢‰£–™¨mƒ£§k@@@@@@@@‡ƒ–¥k@@@@@@@@ÇÃÖåk@@@@@@@@–¥…™™‰„…•m£––“¢k@@@@@@@@¦™•@~@ã™¤…k@@@@@@@@¢‰“…•£@~@ã™¤…k@@@@]@@@@–¥…™™‰„…•m£––“¢­““¥”`ƒ–¥½@~@m†‰•„m‡…•…™‰ƒM@@@@@@@@™…—–¢‰£–™¨mƒ£§k@@@@@@@@““¥”`ƒ–¥k@@@@@@@@ÂÁéÅÓmÓÓåÔmÃÖåk@@@@@@@@–¥…™™‰„…•m£––“¢k@@@@@@@@¦™•@~@ã™¤…k@@@@@@@@¢‰“…•£@~@ã™¤…k@@@@]@@@@–¥…™™‰„…•m£––“¢­““¥”`—™–†„£½@~@m†‰•„m‡…•…™‰ƒM@@@@@@@@™…—–¢‰£–™¨mƒ£§k@@@@@@@@““¥”`—™–†„£k@@@@@@@@ÂÁéÅÓmÓÓåÔm×ÙÖÆÄÁãÁk@@@@@@@@–¥…™™‰„…•m£––“¢k@@@@@@@@¦™•@~@ã™¤…k@@@@@@@@¢‰“…•£@~@ã™¤…k@@@@]@@@@–¥…™™‰„…•m£––“¢­™½@~@m†‰•„m‡…•…™‰ƒM@@@@@@@@™…—–¢‰£–™¨mƒ£§k@@@@@@@@™k@@@@@@@@ÁÙk@@@@@@@@–¥…™™‰„…•m£––“¢k@@@@@@@@¦™•@~@ã™¤…k@@@@@@@@¢‰“…•£@~@ã™¤…k@@@@]@@@@‰†@„™¦‰•z@@@@@@@@–¥…™™‰„…•m£––“¢­‡ƒƒ½@~@ƒƒm¦™——…™K¢ˆ@@@@@@@@–¥…™™‰„…•m£––“¢­™½@~@m†‰•„m‡…•…™‰ƒM™…—–¢‰£–™¨mƒ£§k@“‰‚£––“k@ÓÉÂãÖÖÓk@–¥…™™‰„…•m£––“¢]@@@@¤£–mƒ–•†‰‡¤™…m¦™•‰•‡m”¨‚…M™…—–¢‰£–™¨mƒ£§k@ÃÃ@¤¢…„z@@N@¢£™Mƒƒ]]@@@@£––“m—£ˆ¢@~@m‡…£m£––“m—£ˆ¢M™…—–¢‰£–™¨mƒ£§k@–¥…™™‰„…•m£––“¢]@@@@{@ãˆ…@—™¢…mˆ…„…™@£––“@•……„¢@£–@‚…@@¦™——…™@™–¤•„@£ˆ…@ƒ–”—‰“…™@¢@‰£@ˆ¢@@@@{@£–@£–¤ƒˆ@£ˆ…@–¤£—¤£@†‰“…K@@@@£––“m—£ˆ¢­—™¢…mˆ…„…™¢½@~@ƒƒm¦™——…™K¢ˆ@@@@ƒƒm£––“ƒˆ‰•m‰„…•£‰†‰…™@~@…¢ƒ—…m¢£™‰•‡M‡…£m…•¥m¥™M@@@@@@@@™…—–¢‰£–™¨mƒ£§k@@@@@@@@ÃÃmãÖÖÓÃÈÁÉÕmÕÁÔÅk@@@@@@@@“–ƒ“k@@@@@@@@Æ“¢…k@@@@]]@@@@ƒƒm¦™——…™m¢™ƒ@~@M@@@@@@@@|‚©…“m£––“¢aa£––“¢aƒ——z–¢§mƒƒm¦™——…™K¢ˆK£—“@‰†@„™¦‰•@…“¢…@|‚©…“m£––“¢aa£––“¢aƒ——z“‰•¤§mƒƒm¦™——…™K¢ˆK£—“@@@@]@@@@™…—–¢‰£–™¨mƒ£§K£…”—“£…M@@@@@@@@ƒƒm¦™——…™K¢ˆk@@@@@@@@—£ˆ¢­ƒƒm¦™——…™m¢™ƒ½k@@@@@@@@À@@@@@@@@@@@@lÀƒƒÐz@…¢ƒ—…m¢£™‰•‡M¢£™Mƒƒ]]k@@@@@@@@@@@@lÀ…•¥Ðz@…¢ƒ—…m¢£™‰•‡M‡…£m…•¥M™…—–¢‰£–™¨mƒ£§]]k@@@@@@@@Ðk@@@@]@@@@ƒ–•“¨m–—£¢@~@¢—“‰£m…¢ƒ—…„M‡…£m…•¥m¥™M@@@@@@@@™…—–¢‰£–™¨mƒ£§k@@@@@@@@ÂÁéÅÓmÃÖÕÓèÖ×ãâk@@@@@@@@k@@@@@@@@Æ“¢…k@@@@]k@z]@@@@ƒ§§m–—£¢@~@¢—“‰£m…¢ƒ—…„M‡…£m…•¥m¥™M@@@@@@@@™…—–¢‰£–™¨mƒ£§k@@@@@@@@ÂÁéÅÓmÃççÖ×ãâk@@@@@@@@`¢£„~ƒNNñôk@@@@@@@@Æ“¢…k@@@@]k@z]@@@@‡–“„m–™m““„m“‰•’…™m—£ˆ@~@M@@@@@@@@m†‰•„m“‰•’…™m—£ˆM™…—–¢‰£–™¨mƒ£§k@ƒƒk@““„k@‰¢mƒ“•‡]@–™@@@@@@@@m†‰•„m“‰•’…™m—£ˆM™…—–¢‰£–™¨mƒ£§k@ƒƒk@‡–“„k@‰¢mƒ“•‡]@@@@]@@@@ƒƒm—£ˆ@~@™…—–¢‰£–™¨mƒ£§K—£ˆMƒƒ]@@@@‰†@•–£@¢£™Mƒƒm—£ˆ]K¢£™£¢¦‰£ˆM¢£™M™…—–¢‰£–™¨mƒ£§K—£ˆMK]]@N@a]z@@@@@@@@{@ƒƒ@‰¢@–¤£¢‰„…@£ˆ…@™…—–¢‰£–™¨k@¢…£@`Â@@@@@@@@‚‰•m¢…™ƒˆm†“‡¢@~@­`Â@N@…¢ƒ—…m¢£™‰•‡M¢£™Mƒƒm—£ˆK„‰™•”…]]½@@@@…“¢…z@@@@@@@@{@ƒƒ@‰¢@‰•¢‰„…@£ˆ…@™…—–¢‰£–™¨k@„–•}£@¢…£@`ÂK@@@@@@@@‚‰•m¢…™ƒˆm†“‡¢@~@­½@@@@‰†@•–£@‡–“„m–™m““„m“‰•’…™m—£ˆz@@@@@@@@“„m—£ˆ@~@™…—–¢‰£–™¨mƒ£§K—£ˆM£––“m—£ˆ¢­“„½]@@@@@@@@‰†@“„m—£ˆK„‰™•”…@Z~@ƒƒm—£ˆK„‰™•”…z@@@@@@@@@@@@‚‰•m¢…™ƒˆm†“‡¢K——…•„M`Â@N@¢£™M“„m—£ˆK„‰™•”…]]@@@@†–™ƒ…m“‰•’…™m†“‡¢@~@­½@@@@‰†@‡–“„m–™m““„m“‰•’…™m—£ˆz@@@@@@@@†–™ƒ…m“‰•’…™m†“‡¢K——…•„M`†¤¢…`“„~@N@‡–“„m–™m““„m“‰•’…™m—£ˆ]@@@@{@ãÖÄÖz@É£}¢@¤•ƒ“…™@¦ˆ¨@£ˆ…¢…@†“‡¢@™…•}£@„„…„@–•@”ƒÖâK@@@@‰†@‚‰•m¢…™ƒˆm†“‡¢@•„@•–£@„™¦‰•z@@@@@@@@†–™ƒ…m“‰•’…™m†“‡¢K…§£…•„M‚‰•m¢…™ƒˆm†“‡¢]@@@@¤¢…m“‰‚ƒ——@~@„™¦‰•@–™@‚¢„@@@@‰¢m¢m•……„…„m¢¤——–™£…„@~@m‰¢m“‰•’…™m–—£‰–•m¢¤——–™£…„M@@@@@@@@™…—–¢‰£–™¨mƒ£§k@@@@@@@@ƒƒk@@@@@@@@†–™ƒ…m“‰•’…™m†“‡¢k@@@@@@@@`æ“k`•–`¢`•……„…„k@@@@@@@@`•–`¢`•……„…„k@@@@]@@@@‰¢m—¤¢ˆm¢££…m¢¤——–™£…„@~@m‰¢m“‰•’…™m–—£‰–•m¢¤——–™£…„M@@@@@@@@™…—–¢‰£–™¨mƒ£§k@@@@@@@@ƒƒk@@@@@@@@†–™ƒ…m“‰•’…™m†“‡¢k@@@@@@@@`æ“k``—¤¢ˆ`¢££…k@@@@@@@@``—¤¢ˆ`¢££…k@@@@]@@@@‰†@¤¢…m“‰‚ƒ——z@@@@@@@@‚©…“m„…†¤“£m“‰‚¢@~@­`“ƒNNk@`“”½@@@@…“¢…z@@@@@@@@‚©…“m„…†¤“£m“‰‚¢@~@­`“¢£„ƒNNk@`“”½@@@@‰†@‰¢m¢m•……„…„m¢¤——–™£…„@•„@‰¢m—¤¢ˆm¢££…m¢¤——–™£…„z@@@@@@@@{@Ä–@•–£@“‰•’@‡‰•¢£@ÃNN@¢£•„™„@“‰‚™™‰…¢@¤•“…¢¢@£ˆ…¨@™…@ƒ£¤““¨@@@@@@@@{@¤¢…„K@@@@@@@@{@æ…@¢¢¤”…@£ˆ£@``—¤¢ˆ`¢££…@¢¤——–™£@‰”—“‰…¢@``—–—`¢££…@¢¤——–™£K@@@@@@@@‚©…“m“‰•’“‰‚¢m…“…”…•£¢@~@­@@@@@@@@@@@@™‡@@@@@@@@@@@@†–™@“‰‚@‰•@‚©…“m„…†¤“£m“‰‚¢@@@@@@@@@@@@†–™@™‡@‰•@­`æ“k``—¤¢ˆ`¢££…k`¢`•……„…„k@“‰‚k@`æ“k``—–—`¢££…½@@@@@@@@½@@@@…“¢…z@@@@@@@@‚©…“m“‰•’“‰‚¢m…“…”…•£¢@~@‚©…“m„…†¤“£m“‰‚¢@@@@‚©…“m“‰•’“‰‚¢@~@zK‘–‰•M‚©…“m“‰•’“‰‚¢m…“…”…•£¢]@@@@‚©…“m“‰•’–—£¢@~@@@@@“‰•’m–—£¢@~@¢—“‰£m…¢ƒ—…„M‡…£m…•¥m¥™M@@@@@@@@™…—–¢‰£–™¨mƒ£§k@@@@@@@@ÂÁéÅÓmÓÉÕÒÖ×ãâk@@@@@@@@‚©…“m“‰•’–—£¢k@@@@@@@@Æ“¢…k@@@@]k@z]@@@@“‰•’m“‰‚¢@~@¢—“‰£m…¢ƒ—…„M‡…£m…•¥m¥™M@@@@@@@@™…—–¢‰£–™¨mƒ£§k@@@@@@@@ÂÁéÅÓmÓÉÕÒÓÉÂâk@@@@@@@@‚©…“m“‰•’“‰‚¢k@@@@@@@@Æ“¢…k@@@@]k@z]@@@@ƒ–¥…™‡…mƒ–”—‰“…m†“‡¢k@ƒ–¥…™‡…m“‰•’m†“‡¢@~@mƒ–¥…™‡…m†“‡¢M™…—–¢‰£–™¨mƒ£§k@„™¦‰•]@@@@—™‰•£m™…¢–¤™ƒ…m„‰™m¢¤——–™£…„@~@m‰¢mƒ–”—‰“…™m–—£‰–•m¢¤——–™£…„M@@@@@@@@™…—–¢‰£–™¨mƒ£§k@@@@@@@@ƒƒk@@@@@@@@`—™‰•£`™…¢–¤™ƒ…`„‰™k@@@@]@@@@•–mƒ•–•‰ƒ“m—™…†‰§…¢m–—£@~@m‡…£m•–mƒ•–•‰ƒ“m—™…†‰§…¢m–—£M™…—–¢‰£–™¨mƒ£§k@ƒƒ]@@@@‚¤‰“£‰•m‰•ƒ“¤„…m„‰™…ƒ£–™‰…¢@~@m¤•‰˜M@@@@@@@@m‡…£mƒ§§m‰•ƒ“¤„…m„‰™…ƒ£–™‰…¢M™…—–¢‰£–™¨mƒ£§k@—™‰•£m™…¢–¤™ƒ…m„‰™m¢¤——–™£…„k@ƒƒk@`§ƒk@ƒ–•“¨m–—£¢]@N@@@@@@@@m‡…£mƒ§§m‰•ƒ“¤„…m„‰™…ƒ£–™‰…¢M™…—–¢‰£–™¨mƒ£§k@—™‰•£m™…¢–¤™ƒ…m„‰™m¢¤——–™£…„k@ƒƒk@`§ƒNNk@ƒ§§m–—£¢]@N@@@@@@@@m‡…£mƒ§§m‰•ƒ“¤„…m„‰™…ƒ£–™‰…¢M@@@@@@@@@@@@™…—–¢‰£–™¨mƒ£§k@@@@@@@@@@@@—™‰•£m™…¢–¤™ƒ…m„‰™m¢¤——–™£…„k@@@@@@@@@@@@ƒƒk@@@@@@@@@@@@`§ƒNNk@@@@@@@@@@@@ƒ§§m–—£¢@N@­`¢£„“‰‚~“‰‚ƒNN½k@@@@@@@@]@N@@@@@@@@m‡…£mƒ§§m‰•ƒ“¤„…m„‰™…ƒ£–™‰…¢M@@@@@@@@@@@@™…—–¢‰£–™¨mƒ£§k@@@@@@@@@@@@—™‰•£m™…¢–¤™ƒ…m„‰™m¢¤——–™£…„k@@@@@@@@@@@@ƒƒk@@@@@@@@@@@@`§ƒk@@@@@@@@@@@@•–mƒ•–•‰ƒ“m—™…†‰§…¢m–—£k@@@@@@@@]@N@@@@@@@@m‡…£mƒ§§m‰•ƒ“¤„…m„‰™…ƒ£–™‰…¢M@@@@@@@@@@@@™…—–¢‰£–™¨mƒ£§k@@@@@@@@@@@@—™‰•£m™…¢–¤™ƒ…m„‰™m¢¤——–™£…„k@@@@@@@@@@@@ƒƒk@@@@@@@@@@@@`§ƒNNk@@@@@@@@@@@@ƒ§§m–—£¢@N@•–mƒ•–•‰ƒ“m—™…†‰§…¢m–—£k@@@@@@@@]@N@@@@@@@@m‡…£mƒ§§m‰•ƒ“¤„…m„‰™…ƒ£–™‰…¢M@@@@@@@@@@@@™…—–¢‰£–™¨mƒ£§k@@@@@@@@@@@@—™‰•£m™…¢–¤™ƒ…m„‰™m¢¤——–™£…„k@@@@@@@@@@@@ƒƒk@@@@@@@@@@@@`§ƒNNk@@@@@@@@@@@@ƒ§§m–—£¢@N@•–mƒ•–•‰ƒ“m—™…†‰§…¢m–—£@N@­`¢£„“‰‚~“‰‚ƒNN½k@@@@@@@@]@N@@@@@@@@{@Á“¦¨¢@‰•ƒ“¤„…„@‰•@ƒ¢…@£ˆ…@¤¢…™@ˆ¢@çƒ–„…@N@£ˆ…@ÃÓã@‰•¢£““…„k@‚–£ˆ@@@@@@@@{@—£ˆ¢@ƒ•@‚…@¤¢…„@‰•£…™ƒˆ•‡…‚“¨@@@@@@@@­aÓ‰‚™™¨aÄ…¥…“–—…™aÃ–””•„Ó‰•…ã––“¢aâÄÒ¢aÔƒÖâçK¢„’½k@@@@]@@@@‡…•…™£…m”–„¤“…”—@~@‰¢mƒ“•‡@@@@‰†@‡…•…™£…m”–„¤“…”—z@@@@@@@@™…—–¢‰£–™¨mƒ£§K†‰“…M”–„¤“…K”–„¤“…”—k@m‡…•…™£…m¢¨¢£…”m”–„¤“…m”—M@@@@@@@@@@@@™…—–¢‰£–™¨mƒ£§k@@@@@@@@@@@@‚¤‰“£‰•m‰•ƒ“¤„…m„‰™…ƒ£–™‰…¢k@@@@@@@@@@@@—£ˆ¢­|‚©…“m£––“¢aa£––“¢aƒ——z‡…•…™£…m¢¨¢£…”m”–„¤“…m”—K¢ˆ½k@@@@@@@@]]@@@@¦™‰£…m‚¤‰“£‰•m‰•ƒ“¤„…m„‰™…ƒ£–™¨m—£ˆ¢M™…—–¢‰£–™¨mƒ£§k@ƒƒk@‚¤‰“£‰•m‰•ƒ“¤„…m„‰™…ƒ£–™‰…¢]@@@@™…—–¢‰£–™¨mƒ£§K£…”—“£…M@@@@@@@@ÂäÉÓÄk@@@@@@@@—£ˆ¢­|‚©…“m£––“¢aa£––“¢aƒ——zÂäÉÓÄK£—“½k@@@@@@@@À@@@@@@@@@@@@lÀƒƒm£––“ƒˆ‰•m‰„…•£‰†‰…™Ðz@ƒƒm£––“ƒˆ‰•m‰„…•£‰†‰…™k@@@@@@@@@@@@lÀ•”…Ðz@ƒ—¤m¥“¤…k@@@@@@@@@@@@lÀ”–„¤“…”—Ðz@Màz”–„¤“…K”–„¤“…”—à@‰†@‡…•…™£…m”–„¤“…”—@…“¢…@Õ–•…]k@@@@@@@@@@@@lÀƒƒmƒ–”—‰“…™m„…—¢Ðz@‡…£m¢£™“™’m“‰¢£M­@@@@@@@@@@@@@@@@z‚¤‰“£‰•m‰•ƒ“¤„…m„‰™…ƒ£–™¨m—£ˆ¢k@@@@@@@@@@@@@@@@zƒƒm¦™——…™k@@@@@@@@@@@@½]k@@@@@@@@@@@@lÀƒ–”—‰“…™Ðz@…¢ƒ—…m¢£™‰•‡M‡…£m…•¥m¥™M@@@@@@@@@@@@@@@@™…—–¢‰£–™¨mƒ£§k@@@@@@@@@@@@@@@@ÂÁéÅÓmÃÖÔ×ÉÓÅÙk@@@@@@@@@@@@@@@@m‡…£mƒ–”—‰“…™m•”…M™…—–¢‰£–™¨mƒ£§k@ƒƒ]k@@@@@@@@@@@@@@@@Æ“¢…k@@@@@@@@@@@@]]k@@@@@@@@@@@@lÀ‚‰m¥…™¢‰–•Ðz@…¢ƒ—…m¢£™‰•‡M‡…£m…•¥m¥™M@@@@@@@@@@@@@@@@™…—–¢‰£–™¨mƒ£§k@@@@@@@@@@@@@@@@ÁÂÉmåÅÙâÉÖÕk@@@@@@@@@@@@@@@@“–ƒ“k@@@@@@@@@@@@@@@@Æ“¢…k@@@@@@@@@@@@]]k@@@@@@@@@@@@lÀ‚‰m“‰‚ƒm¥…™¢‰–•Ðz@…¢ƒ—…m¢£™‰•‡M‡…£m…•¥m¥™M@@@@@@@@@@@@@@@@™…—–¢‰£–™¨mƒ£§k@@@@@@@@@@@@@@@@ÁÂÉmÓÉÂÃmåÅÙâÉÖÕk@@@@@@@@@@@@@@@@“–ƒ“k@@@@@@@@@@@@@@@@Æ“¢…k@@@@@@@@@@@@]]k@@@@@@@@@@@@lÀˆ–¢£m¢¨¢£…”m•”…Ðz@…¢ƒ—…m¢£™‰•‡M‡…£m…•¥m¥™M@@@@@@@@@@@@@@@@™…—–¢‰£–™¨mƒ£§k@@@@@@@@@@@@@@@@ÂÁéÅÓmÈÖâãmâèâãÅÔk@@@@@@@@@@@@@@@@“–ƒ“k@@@@@@@@@@@@@@@@Æ“¢…k@@@@@@@@@@@@]]k@@@@@@@@@@@@lÀ£™‡…£m“‰‚ƒÐz@”ƒ–¢§@‰†@„™¦‰•@…“¢…@…¢ƒ—…m¢£™‰•‡M‡…£m…•¥m¥™M@@@@@@@@@@@@@@@@™…—–¢‰£–™¨mƒ£§k@@@@@@@@@@@@@@@@ÂÁéÅÓmãÁÙÇÅãmÓÉÂÃk@@@@@@@@@@@@@@@@“–ƒ“k@@@@@@@@@@@@@@@@Æ“¢…k@@@@@@@@@@@@]]k@@@@@@@@@@@@lÀ£™‡…£mƒ—¤Ðz@…¢ƒ—…m¢£™‰•‡M‡…£m…•¥m¥™M@@@@@@@@@@@@@@@@™…—–¢‰£–™¨mƒ£§k@@@@@@@@@@@@@@@@ÂÁéÅÓmãÁÙÇÅãmÃ×äk@@@@@@@@@@@@@@@@ƒ—¤m¥“¤…k@@@@@@@@@@@@@@@@Æ“¢…k@@@@@@@@@@@@]]k@@@@@@@@@@@@lÀ£™‡…£m¢¨¢£…”m•”…Ðz@…¢ƒ—…m¢£™‰•‡M‡…£m…•¥m¥™M@@@@@@@@@@@@@@@@™…—–¢‰£–™¨mƒ£§k@@@@@@@@@@@@@@@@ÂÁéÅÓmãÁÙÇÅãmâèâãÅÔk@@@@@@@@@@@@@@@@“–ƒ“k@@@@@@@@@@@@@@@@Æ“¢…k@@@@@@@@@@@@]]k@@@@@@@@@@@@lÀ£––“m—£ˆ¢Ðz@kà•@@@@@@@@K‘–‰•M@@@@@@@@@@@@@@@@­}l¢z@l¢}@l@M’k@¥]@†–™@’k@¥@‰•@£––“m—£ˆ¢K‰£…”¢M]½k@@@@@@@@@@@@]k@@@@@@@@@@@@lÀƒ§§m‚¤‰“£‰•m‰•ƒ“¤„…m„‰™…ƒ£–™‰…¢Ðz@‡…£m¢£™“™’m“‰¢£M‚¤‰“£‰•m‰•ƒ“¤„…m„‰™…ƒ£–™‰…¢]k@@@@@@@@@@@@lÀƒ–”—‰“…m†“‡¢Ðz@‡…£m¢£™“™’m“‰¢£M@@@@@@@@@@@@@@@@­@@@@@@@@@@@@@@@@@@@@`†¢£ƒ’`—™–£…ƒ£–™k@@@@@@@@@@@@@@@@@@@@{@Á““@¦™•‰•‡¢@™…@…•‚“…„K@@@@@@@@@@@@@@@@@@@@`æ““k@@@@@@@@@@@@@@@@@@@@{@Å•‚“…@@†…¦@”–™…@¦™•‰•‡¢@£ˆ£@™…•}£@—™£@–†@`æ““K@@@@@@@@@@@@@@@@½@N@MM@@@@@@@@@@@@@@@@@@@@m„„mƒ–”—‰“…™m–—£‰–•m‰†m¢¤——–™£…„M™…—–¢‰£–™¨mƒ£§k@ƒƒk@`æ£ˆ™…„`¢†…£¨]@N@@@@@@@@@@@@@@@@@@@@m„„mƒ–”—‰“…™m–—£‰–•m‰†m¢¤——–™£…„M™…—–¢‰£–™¨mƒ£§k@ƒƒk@`æ¢…“†`¢¢‰‡•]@@@@@@@@@@@@@@@@]]@N@M@@@@@@@@@@@@@@@@@@@@{@Ä‰¢‚“…@—™–‚“…”£‰ƒ@¦™•‰•‡¢K@@@@@@@@@@@@@@@@@@@@m„„mƒ–”—‰“…™m–—£‰–•m‰†m¢¤——–™£…„M™…—–¢‰£–™¨mƒ£§k@ƒƒk@`æ¤•¤¢…„`‚¤£`¢…£`—™”…£…™]@N@@@@@@@@@@@@@@@@@@@@{@ˆ¢@†“¢…@—–¢‰£‰¥…¢@@@@@@@@@@@@@@@@@@@@m„„mƒ–”—‰“…™m–—£‰–•m‰†m¢¤——–™£…„M™…—–¢‰£–™¨mƒ£§k@ƒƒk@`æ•–`†™……`•–•ˆ…—`–‚‘…ƒ£]@N@@@@@@@@@@@@@@@@@@@@{@Å•‚“…@ƒ–“–™‰•‡@…¥…•@‰†@£ˆ…™…}¢@•–@££ƒˆ…„@£…™”‰•“K@Â©…“@™…”–¥…¢@£ˆ…@@@@@@@@@@@@@@@@@@@@{@…¢ƒ—…@¢…˜¤…•ƒ…¢@‰†@``•–ƒ–“–™@‰¢@¢—…ƒ‰†‰…„K@@@@@@@@@@@@@@@@@@@@m„„mƒ–”—‰“…™m–—£‰–•m‰†m¢¤——–™£…„M™…—–¢‰£–™¨mƒ£§k@ƒƒk@`†ƒ–“–™`„‰‡•–¢£‰ƒ¢]@@@@@@@@@@@@@@@@]@N@­@@@@@@@@@@@@@@@@@@@@{@Ò……—@¢£ƒ’@†™”…¢@†–™@„…‚¤‡‡‰•‡k@…¥…•@‰•@–—£@”–„…K@@@@@@@@@@@@@@@@@@@@`†•–`–”‰£`†™”…`—–‰•£…™k@@@@@@@@@@@@@@@@½k@@@@@@@@@@@@]k@@@@@@@@@@@@lÀƒ§§m†“‡¢Ðz@‡…£m¢£™“™’m“‰¢£Mƒ§§m–—£¢@N@m…¢ƒ—…„mƒ—“¤¢m‰•ƒ“¤„…m—£ˆ¢M™…—–¢‰£–™¨mƒ£§]]k@@@@@@@@@@@@lÀƒ–•“¨m†“‡¢Ðz@‡…£m¢£™“™’m“‰¢£Mƒ–•“¨m–—£¢]k@@@@@@@@@@@@lÀ“‰•’m†“‡¢Ðz@‡…£m¢£™“™’m“‰¢£M†–™ƒ…m“‰•’…™m†“‡¢@N@M@@@@@@@@@@@@@@@@­`æ“k`•–`¢`•……„…„½@‰†@‰¢m¢m•……„…„m¢¤——–™£…„@…“¢…@­½@@@@@@@@@@@@]@N@m„„m“‰•’…™m–—£‰–•m‰†m¢¤——–™£…„M@@@@@@@@@@@@@@@@™…—–¢‰£–™¨mƒ£§k@@@@@@@@@@@@@@@@ƒƒk@@@@@@@@@@@@@@@@†–™ƒ…m“‰•’…™m†“‡¢k@@@@@@@@@@@@@@@@`æ“k`©k™…“™–k`©k•–¦k@@@@@@@@@@@@@@@@`©k@@@@@@@@@@@@]@N@M@@@@@@@@@@@@@@@@­@@@@@@@@@@@@@@@@@@@@`ˆ…„…™—„m”§m‰•¢£““m•”…¢k@@@@@@@@@@@@@@@@½@‰†@„™¦‰•@…“¢…@­@@@@@@@@@@@@@@@@@@@@{@Ç–“„@“‰•’…™@–•“¨o@Ã•@¦…@…•‚“…@£ˆ‰¢@‚¨@„…†¤“£o@@@@@@@@@@@@@@@@@@@@{@`æ“k``¦™•`…§…ƒ¢£ƒ’k@@@@@@@@@@@@@@@@@@@@{@`æ“k``„…£…ƒ£`–„™`¥‰–“£‰–•¢@@@@@@@@@@@@@@@@½@N@m„„mƒ–”—‰“…™m–—£‰–•m‰†m¢¤——–™£…„M@@@@@@@@@@@@@@@@@@@@{@È¥…@‡ƒƒ@™…£¤™•@£ˆ…@…§‰£@ƒ–„…@†™–”@“„K@@@@@@@@@@@@@@@@@@@@™…—–¢‰£–™¨mƒ£§k@@@@@@@@@@@@@@@@@@@@ƒƒk@@@@@@@@@@@@@@@@@@@@`—¢¢`…§‰£`ƒ–„…¢k@@@@@@@@@@@@@@@@]@@@@@@@@@@@@]@N@“‰•’m–—£¢]k@@@@@@@@@@@@lÀ“‰•’m“‰‚¢Ðz@‡…£m¢£™“™’m“‰¢£M“‰•’m“‰‚¢]k@@@@@@@@@@@@lÀ–—£mƒ–”—‰“…m†“‡¢Ðz@‡…£m¢£™“™’m“‰¢£M@@@@@@@@@@@@@@@@­@@@@@@@@@@@@@@@@@@@@{@Õ–@„…‚¤‡@¢¨”‚–“¢K@@@@@@@@@@@@@@@@@@@@{@Ô¨‚…@¦…@¢ˆ–¤“„@…•‚“…@ˆ££—¢zaa‡ƒƒK‡•¤K–™‡a¦‰’‰aÄ…‚¤‡Æ‰¢¢‰–•@†–™@–—£@–™@@@@@@@@@@@@@@@@@@@@{@…¥…•@‡…•…™““¨o@È–¦…¥…™k@£ˆ£@ƒ•}£@ˆ——…•@ˆ…™…k@¢@‰£@™…˜¤‰™…¢@¢—…ƒ‰“@@@@@@@@@@@@@@@@@@@@{@ˆ•„“‰•‡@‰•@Â©…“K@@@@@@@@@@@@@@@@@@@@`‡ðk@@@@@@@@@@@@@@@@@@@@{@Ã–•¢…™¥£‰¥…@ƒˆ–‰ƒ…@†–™@`Ö@@@@@@@@@@@@@@@@@@@@{@`Öó@ƒ•@‰•ƒ™…¢…@‚‰•™¨@¢‰©…@•„@…¥…•@¢“–¦@„–¦•@£ˆ…@™…¢¤“£‰•‡@‚‰•™‰…¢K@@@@@@@@@@@@@@@@@@@@{@×™–†‰“…@†‰™¢£@•„@a@–™@¤¢…@ÆÄÖ@‰†@¨–¤@•……„@‚…££…™@—…™†–™”•ƒ…@£ˆ•@£ˆ‰¢K@@@@@@@@@@@@@@@@@@@@`Öòk@@@@@@@@@@@@@@@@@@@@{@â…ƒ¤™‰£¨@ˆ™„…•‰•‡@–•@‚¨@„…†¤“£K@@@@@@@@@@@@@@@@@@@@{@Ã–•¢…™¥£‰¥…@ƒˆ–‰ƒ…^@`ÄmÆÖÙãÉÆèmâÖäÙÃÅ~ò@”¨@‚…@¤•¢†…@‰•@¢–”…@ƒ¢…¢K@@@@@@@@@@@@@@@@@@@@`ÄmÆÖÙãÉÆèmâÖäÙÃÅ~ñk@@@@@@@@@@@@@@@@@@@@{@Ä‰¢‚“…@¢¢…™£‰–•¢@@@@@@@@@@@@@@@@@@@@`ÄÕÄÅÂäÇk@@@@@@@@@@@@@@@@@@@@{@Ù…”–¥“@–†@¤•¤¢…„@ƒ–„…@•„@„£@£@“‰•’@£‰”…@Mƒ•@£ˆ‰¢@‰•ƒ™…¢…@‚‰•™¨@@@@@@@@@@@@@@@@@@@@{@¢‰©…@‰•@¢–”…@ƒ¢…¢o]K@@@@@@@@@@@@@@@@@@@@`††¤•ƒ£‰–•`¢…ƒ£‰–•¢k@@@@@@@@@@@@@@@@@@@@`†„£`¢…ƒ£‰–•¢k@@@@@@@@@@@@@@@@½k@@@@@@@@@@@@]k@@@@@@@@@@@@lÀ–—£m“‰•’m†“‡¢Ðz@‡…£m¢£™“™’m“‰¢£M@@@@@@@@@@@@@@@@­`æ“k`„…„m¢£™‰—½@‰†@„™¦‰•@…“¢…@m„„m“‰•’…™m–—£‰–•m‰†m¢¤——–™£…„M@@@@@@@@@@@@@@@@@@@@™…—–¢‰£–™¨mƒ£§k@@@@@@@@@@@@@@@@@@@@ƒƒk@@@@@@@@@@@@@@@@@@@@†–™ƒ…m“‰•’…™m†“‡¢k@@@@@@@@@@@@@@@@@@@@`æ“k``‡ƒ`¢…ƒ£‰–•¢k@@@@@@@@@@@@@@@@@@@@`‡ƒ`¢…ƒ£‰–•¢k@@@@@@@@@@@@@@@@]k@@@@@@@@@@@@]k@@@@@@@@@@@@lÀ¤•†‰“£…™…„mƒ–”—‰“…m†“‡¢Ðz@‡…£m¢£™“™’m“‰¢£M@@@@@@@@@@@@@@@@m‡…£m•–mƒ•–•‰ƒ“m—™…†‰§…¢m–—£M™…—–¢‰£–™¨mƒ£§k@ƒƒ]@N@­@@@@@@@@@@@@@@@@@@@@{@Ô’…@ÃNN@ƒ–”—‰“£‰–•@„…£…™”‰•‰¢£‰ƒK@ä¢…@“‰•’¢£”—‰•‡@‰•¢£…„@–†@£ˆ…¢…@@@@@@@@@@@@@@@@@@@@{@ƒ–”—‰“…™@¢¨”‚–“¢K@@@@@@@@@@@@@@@@@@@@`æ•–`‚¤‰“£‰•`”ƒ™–`™…„…†‰•…„k@@@@@@@@@@@@@@@@@@@@`ÄmmÄÁãÅmm~ààà™…„ƒ£…„àààk@@@@@@@@@@@@@@@@@@@@`ÄmmãÉÔÅâãÁÔ×mm~ààà™…„ƒ£…„àààk@@@@@@@@@@@@@@@@@@@@`ÄmmãÉÔÅmm~ààà™…„ƒ£…„àààk@@@@@@@@@@@@@@@@½k@@@@@@@@@@@@]k@@@@@@@@@@@@lÀ„‚‡mƒ–”—‰“…m†“‡¢Ðz@‡…£m¢£™“™’m“‰¢£M­`‡½]k@@@@@@@@@@@@lÀƒ–¥…™‡…mƒ–”—‰“…m†“‡¢Ðz@ƒ–¥…™‡…mƒ–”—‰“…m†“‡¢k@@@@@@@@@@@@lÀƒ–¥…™‡…m“‰•’m†“‡¢Ðz@ƒ–¥…™‡…m“‰•’m†“‡¢k@@@@@@@@@@@@lÀ¢¤——–™£¢m¢£™£m…•„m“‰‚Ðz@ã™¤…@‰†@‡–“„m–™m““„m“‰•’…™m—£ˆ@…“¢…@Æ“¢…k@@@@@@@@Ðk@@@@]
+\ No newline at end of file
+-- 
+2.55.0
+

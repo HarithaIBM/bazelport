@@ -1,0 +1,29 @@
+From 5ad4caff1dadbb321f3faa3955128c5ed3923d55 Mon Sep 17 00:00:00 2001
+From: Bazel z/OS Port <bazel@zos.build>
+Date: Fri, 11 Sep 2026 03:07:32 -0400
+Subject: [PATCH 2/2] z/OS: Support IBM J9 JVM garbage collector names
+
+Add IBM J9 GC pool name detection (tenured-SOA, tenured-LOA, global)
+to the existing isTenuredSpace check.
+---
+ .../build/lib/metrics/GarbageCollectionMetricsUtils.java      | 4 +++-
+ 1 file changed, 3 insertions(+), 1 deletion(-)
+
+diff --git a/src/main/java/com/google/devtools/build/lib/metrics/GarbageCollectionMetricsUtils.java b/src/main/java/com/google/devtools/build/lib/metrics/GarbageCollectionMetricsUtils.java
+index 6d7e43e..e8903d9 100644
+--- a/src/main/java/com/google/devtools/build/lib/metrics/GarbageCollectionMetricsUtils.java
++++ b/src/main/java/com/google/devtools/build/lib/metrics/GarbageCollectionMetricsUtils.java
+@@ -25,7 +25,9 @@ public final class GarbageCollectionMetricsUtils {
+         || "PS Old Gen".equals(name)
+         || "Tenured Gen".equals(name)
+         || "Shenandoah".equals(name)
+-        || "ZHeap".equals(name);
++        || "ZHeap".equals(name)
++        || name.contains("tenured") || name.contains("global")
++        || name.contains("SOA") || name.contains("LOA");
+   }
+ 
+   public static boolean isFullGc(GarbageCollectionNotificationInfo info) {
+-- 
+2.55.0
+
