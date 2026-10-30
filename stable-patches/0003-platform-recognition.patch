@@ -54,38 +54,47 @@ index cb8c2e3..42230bf 100644
 diff --git a/src/main/java/com/google/devtools/build/lib/bazel/repository/local_config_platform.WORKSPACE b/src/main/java/com/google/devtools/build/lib/bazel/repository/local_config_platform.WORKSPACE
 old mode 100644
 new mode 100755
-index de285fb..823d32c
+index de285fb..9a97723
 --- a/src/main/java/com/google/devtools/build/lib/bazel/repository/local_config_platform.WORKSPACE
 +++ b/src/main/java/com/google/devtools/build/lib/bazel/repository/local_config_platform.WORKSPACE
-@@ -1,25 +1,5 @@
+@@ -1,25 +1,20 @@
 -load("@bazel_tools//tools/build_defs/repo:local.bzl", "local_repository")
 -load("@bazel_tools//tools/build_defs/repo:utils.bzl", "maybe")
-+# Patched local_config_platform.WORKSPACE - don't use external platforms
- 
+-
 -maybe(
 -    local_repository,
 -    "platforms",
--    path = __embedded_dir__ + "/platforms",
--)
-+# Use native platform detection
-+# No external repos needed
++# z/OS: restore the default repos needed by every WORKSPACE-mode workspace
++# (upstream local_config_platform.WORKSPACE). Kept load-free where possible:
++# loading @bazel_tools .bzl files from WORKSPACE prefix/suffix code that runs
++# before the workspace chunks are complete causes circular //external
++# resolution errors in this port. The trailing load of the host extension is
++# safe (repo defined in an earlier chunk of this same suffix).
++local_repository(
++    name = "platforms",
+     path = __embedded_dir__ + "/platforms",
+ )
  
 -maybe(
 -    local_repository,
 -    "internal_platforms_do_not_use",
--    path = __embedded_dir__ + "/platforms",
--)
--
++local_repository(
++    name = "internal_platforms_do_not_use",
+     path = __embedded_dir__ + "/platforms",
+ )
+ 
 -maybe(
 -    local_config_platform,
 -    "local_config_platform",
 -)
--
--load("@internal_platforms_do_not_use//host:extension.bzl", "host_platform_repo")
++local_config_platform(name = "local_config_platform")
+ 
+ load("@internal_platforms_do_not_use//host:extension.bzl", "host_platform_repo")
 -maybe(
 -    host_platform_repo,
 -    "host_platform",
 -)
++host_platform_repo(name = "host_platform")
 diff --git a/src/main/java/com/google/devtools/build/lib/bazel/rules/java/jdk.WORKSPACE b/src/main/java/com/google/devtools/build/lib/bazel/rules/java/jdk.WORKSPACE
 old mode 100644
 new mode 100755
@@ -172,18 +181,19 @@ index 9ff2cc7..c163385
 diff --git a/src/main/java/com/google/devtools/build/lib/bazel/rules/java/rules_java_builtin.WORKSPACE b/src/main/java/com/google/devtools/build/lib/bazel/rules/java/rules_java_builtin.WORKSPACE
 old mode 100644
 new mode 100755
-index e2a1b2e..3e52d77
+index e2a1b2e..bd8735a
 --- a/src/main/java/com/google/devtools/build/lib/bazel/rules/java/rules_java_builtin.WORKSPACE
 +++ b/src/main/java/com/google/devtools/build/lib/bazel/rules/java/rules_java_builtin.WORKSPACE
-@@ -1,6 +1,5 @@
+@@ -1,6 +1,9 @@
 -load("@bazel_tools//tools/build_defs/repo:local.bzl", rules_java_builtin_local_repository = "local_repository")
 -rules_java_builtin_local_repository(
--    name = "rules_java_builtin",
--    path = __embedded_dir__ + "/rules_java",
++# z/OS: define the builtin rules_java repository pointing at the rules_java
++# copy inside the install base. NOTE: do NOT use a load() statement here --
++# loading @bazel_tools .bzl files from the WORKSPACE prefix causes a circular
++# //external package resolution error in this port (see run 127).
++local_repository(
+     name = "rules_java_builtin",
+     path = __embedded_dir__ + "/rules_java",
 -    repo_mapping = {"@rules_java" : "@rules_java_builtin"}
--)
-+# Patched rules_java_builtin.WORKSPACE - don't load external repos
-+
-+# Original tried to load from embedded_dir + "/rules_java"
-+# We don't need that - use native Java rules directly
-+
++    repo_mapping = {"@rules_java" : "@rules_java_builtin"},
+ )

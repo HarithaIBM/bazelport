@@ -329,6 +329,23 @@ index 9200ec0..37d536e
      return null;
    }
  
+diff --git a/src/main/java/com/google/devtools/build/lib/bazel/rules/BazelStrategyModule.java b/src/main/java/com/google/devtools/build/lib/bazel/rules/BazelStrategyModule.java
+old mode 100644
+new mode 100755
+index f503180..08aba03
+--- a/src/main/java/com/google/devtools/build/lib/bazel/rules/BazelStrategyModule.java
++++ b/src/main/java/com/google/devtools/build/lib/bazel/rules/BazelStrategyModule.java
+@@ -72,7 +72,9 @@ public class BazelStrategyModule extends BlazeModule {
+       }
+       spawnStrategies.add("worker");
+       // Sandboxing is not yet available on Windows.
+-      if (OS.getCurrent() != OS.WINDOWS) {
++      // z/OS: processwrapper-sandbox fails (stats.out I/O errors in the
++      // sandboxed execution path); use standalone/local execution instead.
++      if (OS.getCurrent() != OS.WINDOWS && OS.getCurrent() != OS.ZOS) {
+         spawnStrategies.add("sandboxed");
+       }
+       spawnStrategies.add("local");
 diff --git a/src/main/java/com/google/devtools/build/lib/runtime/BlazeRuntime.java b/src/main/java/com/google/devtools/build/lib/runtime/BlazeRuntime.java
 old mode 100644
 new mode 100755

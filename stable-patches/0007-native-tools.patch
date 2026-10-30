@@ -109,7 +109,7 @@ index dae919d..e6da1d0
 diff --git a/src/main/tools/process-wrapper-options.cc b/src/main/tools/process-wrapper-options.cc
 old mode 100644
 new mode 100755
-index 305ad0e..b8f4de5
+index 305ad0e..78cd66b
 --- a/src/main/tools/process-wrapper-options.cc
 +++ b/src/main/tools/process-wrapper-options.cc
 @@ -14,7 +14,23 @@
@@ -136,6 +136,132 @@ index 305ad0e..b8f4de5
  #include <stdarg.h>
  #include <stdio.h>
  #include <stdlib.h>
+@@ -57,6 +73,117 @@ static void Usage(char *program_name, const char *fmt, ...) {
+ 
+ // Parses command line flags from an argv array and puts the results into the
+ // global `opt` struct.
++#ifdef __MVS__
++// z/OS: the libc getopt_long() compares option characters as EBCDIC, while
++// this program is compiled with -fzos-le-char-mode=ascii and receives ASCII
++// argv strings -- so getopt_long never matches any option and silently
++// treats flags like "--" as the command (execvp("--") fails). Parse the
++// options by hand instead.
++static void ParseCommandLine(const std::vector<char *> &args) {
++  size_t i = 1;  // skip argv[0]
++  while (i < args.size()) {
++    char *arg = args[i];
++    if (strcmp(arg, "--") == 0) {
++      i++;  // explicit command separator
++      break;
++    }
++    if (arg[0] != '-' || arg[1] == '\0') {
++      break;  // first non-option ("+" semantics): rest is the command
++    }
++    const char *name = arg + 1;
++    if (name[0] == '-') {
++      name++;
++    }
++    // Long options may be given as --name=value.
++    const char *eq = strchr(name, '=');
++    size_t nlen = (eq != nullptr) ? (size_t)(eq - name) : strlen(name);
++    const char *value = (eq != nullptr) ? eq + 1 : nullptr;
++
++    int c;
++    if ((nlen == 1 && name[0] == 'g') ||
++        (nlen == 16 && strncmp(name, "graceful_sigterm", nlen) == 0)) {
++      c = 'g';
++    } else if ((nlen == 1 && name[0] == 't') ||
++               (nlen == 7 && strncmp(name, "timeout", nlen) == 0)) {
++      c = 't';
++    } else if ((nlen == 1 && name[0] == 'k') ||
++               (nlen == 10 && strncmp(name, "kill_delay", nlen) == 0)) {
++      c = 'k';
++    } else if ((nlen == 1 && name[0] == 'o') ||
++               (nlen == 6 && strncmp(name, "stdout", nlen) == 0)) {
++      c = 'o';
++    } else if ((nlen == 1 && name[0] == 'e') ||
++               (nlen == 6 && strncmp(name, "stderr", nlen) == 0)) {
++      c = 'e';
++    } else if ((nlen == 1 && name[0] == 's') ||
++               (nlen == 5 && strncmp(name, "stats", nlen) == 0)) {
++      c = 's';
++    } else if ((nlen == 1 && name[0] == 'd') ||
++               (nlen == 5 && strncmp(name, "debug", nlen) == 0)) {
++      c = 'd';
++    } else {
++      Usage(args.front(), "Unrecognized argument: %s", arg);
++      return;  // Usage exits
++    }
++
++    if (value == nullptr &&
++        (c == 't' || c == 'k' || c == 'o' || c == 'e' || c == 's')) {
++      if (i + 1 >= args.size()) {
++        Usage(args.front(), "Flag requires an argument: %s", arg);
++        return;
++      }
++      value = args[++i];
++    }
++
++    switch (c) {
++      case 'g':
++        opt.graceful_sigterm = true;
++        break;
++      case 't':
++        if (sscanf(value, "%lf", &opt.timeout_secs) != 1) {
++          Usage(args.front(), "Invalid timeout (-t) value: %s", value);
++        }
++        break;
++      case 'k':
++        if (sscanf(value, "%lf", &opt.kill_delay_secs) != 1) {
++          Usage(args.front(), "Invalid kill delay (-k) value: %s", value);
++        }
++        break;
++      case 'o':
++        if (opt.stdout_path.empty()) {
++          opt.stdout_path.assign(value);
++        } else {
++          Usage(args.front(),
++                "Cannot redirect stdout (-o) to more than one destination.");
++        }
++        break;
++      case 'e':
++        if (opt.stderr_path.empty()) {
++          opt.stderr_path.assign(value);
++        } else {
++          Usage(args.front(),
++                "Cannot redirect stderr (-e) to more than one destination.");
++        }
++        break;
++      case 's':
++        if (opt.stats_path.empty()) {
++          opt.stats_path.assign(value);
++        } else {
++          Usage(args.front(),
++                "Cannot write stats (-s) to more than one destination.");
++        }
++        break;
++      case 'd':
++        opt.debug = true;
++        break;
++    }
++    i++;
++  }
++  if (i < args.size()) {
++    opt.args.assign(args.begin() + i, args.end());
++  }
++}
++#else
+ static void ParseCommandLine(const std::vector<char *> &args) {
+   static struct option long_options[] = {
+       {"graceful_sigterm", no_argument, 0, 'g'},
+@@ -127,6 +254,7 @@ static void ParseCommandLine(const std::vector<char *> &args) {
+     opt.args.assign(args.begin() + optind, args.end());
+   }
+ }
++#endif  // __MVS__
+ 
+ void ParseOptions(int argc, char *argv[]) {
+   std::vector<char *> args(argv, argv + argc);
 diff --git a/src/main/tools/process-wrapper.cc b/src/main/tools/process-wrapper.cc
 old mode 100644
 new mode 100755

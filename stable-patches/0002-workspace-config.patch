@@ -732,10 +732,10 @@ index 8b2cc70..07b5d9f
 +  }
  }
 diff --git a/WORKSPACE b/WORKSPACE
-index 1f206fe..f2e2330 100644
+index 1f206fe..ffffdd0 100644
 --- a/WORKSPACE
 +++ b/WORKSPACE
-@@ -1,3 +1,193 @@
+@@ -1,3 +1,179 @@
 -# ================================================ #
 -# All dependencies have been moved to MODULE.Bazel #
 -# ================================================ #
@@ -894,15 +894,10 @@ index 1f206fe..f2e2330 100644
 +)
 +
 +# platforms 0.0.9 (from dist repository_cache; includes cpu:s390x)
-+local_repository(
-+    name = "platforms",
-+    path = "/home/haritha/code/bazel-7.2.0/bazelport/local_repos/platforms",
-+)
-+
-+local_repository(
-+    name = "internal_platforms_do_not_use",
-+    path = "/home/haritha/code/bazel-7.2.0/bazelport/local_repos/platforms",
-+)
++# NOTE: @platforms / @internal_platforms_do_not_use / @local_config_platform /
++# @host_platform are now provided by the local_config_platform.WORKSPACE
++# suffix (default for every workspace), pointing at the platforms copy in the
++# install base -- no need to redefine them here (redefinition conflicts).
 +
 +# ---------------------------------------------------------------------------
 +# 4. system JDK as @local_jdk (IBM Semeru z/OS via JAVA_HOME)
@@ -921,14 +916,5 @@ index 1f206fe..f2e2330 100644
 +# extension registers them automatically; WORKSPACE mode requires this).
 +register_toolchains("@local_jdk//:runtime_toolchain_definition")
 +register_toolchains("@local_jdk//:bootstrap_runtime_toolchain_definition")
-+
-+# ---------------------------------------------------------------------------
-+# 5. host platform detection (native repo rule + platforms host extension)
-+# ---------------------------------------------------------------------------
-+local_config_platform(name = "local_config_platform")
-+
-+load("@internal_platforms_do_not_use//host:extension.bzl", "host_platform_repo")
-+
-+host_platform_repo(name = "host_platform")
 +
 +# NO http_archive = NO downloads = NO network!

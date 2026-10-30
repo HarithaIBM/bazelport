@@ -23,7 +23,7 @@ index f99995d..fa27a89
  
  armeabi_cc_toolchain_config(name = "stub_armeabi-v7a")
 diff --git a/tools/cpp/unix_cc_configure.bzl b/tools/cpp/unix_cc_configure.bzl
-index 2184487..ec6acf5 100644
+index 2184487..58c8a72 100644
 --- a/tools/cpp/unix_cc_configure.bzl
 +++ b/tools/cpp/unix_cc_configure.bzl
 @@ -36,6 +36,14 @@ def _uniq(iterable):
@@ -77,10 +77,34 @@ index 2184487..ec6acf5 100644
          repository_ctx,
          cc,
          force_linker_flags,
-@@ -584,6 +608,14 @@ def configure_unix_toolchain(repository_ctx, cpu_value, overriden_tools):
+@@ -534,7 +558,10 @@ def configure_unix_toolchain(repository_ctx, cpu_value, overriden_tools):
+         ["/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk"],
+     )
+ 
+-    generate_modulemap = is_clang
++    # z/OS: the module map generation script is executed with /bin/sh, which
++    # reads the (untagged ASCII) script as EBCDIC and fails with FSUM7729.
++    # Clang modules are not used in this z/OS toolchain anyway -- skip it.
++    generate_modulemap = is_clang and not is_zos
+     if generate_modulemap:
+         repository_ctx.file("module.modulemap", _generate_system_module_map(
+             repository_ctx,
+@@ -578,12 +605,23 @@ def configure_unix_toolchain(repository_ctx, cpu_value, overriden_tools):
                  "local",
                  False,
              )),
+-            "%{target_libc}": "macosx" if darwin else escape_string(get_env_var(
++            # z/OS: default target_libc to "zos" on z/OS systems so the
++            # toolchain config applies the z/OS guards (no -Wl,-S, z/OS ar
++            # flags, ...) without requiring BAZEL_TARGET_LIBC in the env.
++            "%{target_libc}": ("macosx" if darwin else escape_string(get_env_var(
+                 repository_ctx,
+                 "BAZEL_TARGET_LIBC",
+-                "local",
++                "zos" if is_zos else "local",
+                 False,
+-            )),
++            ))),
 +            # z/OS: clang reads Bazel-written ASCII @param files as EBCDIC and
 +            # mangles the arguments; pass link/archive inputs on the command
 +            # line instead (z/OS ar does not support @param files either).
@@ -92,7 +116,7 @@ index 2184487..ec6acf5 100644
              "%{target_cpu}": escape_string(get_env_var(
                  repository_ctx,
                  "BAZEL_TARGET_CPU",
-@@ -601,7 +633,14 @@ def configure_unix_toolchain(repository_ctx, cpu_value, overriden_tools):
+@@ -601,7 +639,14 @@ def configure_unix_toolchain(repository_ctx, cpu_value, overriden_tools):
              ),
              "%{cxx_builtin_include_directories}": get_starlark_list(builtin_include_directories),
              "%{compile_flags}": get_starlark_list(
@@ -108,7 +132,7 @@ index 2184487..ec6acf5 100644
                      "-fstack-protector",
                      # All warnings are enabled.
                      "-Wall",
-@@ -625,14 +664,24 @@ def configure_unix_toolchain(repository_ctx, cpu_value, overriden_tools):
+@@ -625,14 +670,24 @@ def configure_unix_toolchain(repository_ctx, cpu_value, overriden_tools):
              "%{cxx_flags}": get_starlark_list(cxx_opts + _escaped_cplus_include_paths(repository_ctx)),
              "%{conly_flags}": get_starlark_list(conly_opts),
              "%{link_flags}": get_starlark_list(force_linker_flags + (
@@ -135,7 +159,7 @@ index 2184487..ec6acf5 100644
                  [
                      "-headerpad_max_install_names",
                  ] if darwin else [
-@@ -646,7 +695,7 @@ def configure_unix_toolchain(repository_ctx, cpu_value, overriden_tools):
+@@ -646,7 +701,7 @@ def configure_unix_toolchain(repository_ctx, cpu_value, overriden_tools):
                      "-pass-exit-codes",
                  )
              ) + link_opts),
@@ -144,7 +168,7 @@ index 2184487..ec6acf5 100644
              "%{opt_compile_flags}": get_starlark_list(
                  [
                      # No debug symbols.
-@@ -674,13 +723,13 @@ def configure_unix_toolchain(repository_ctx, cpu_value, overriden_tools):
+@@ -674,13 +729,13 @@ def configure_unix_toolchain(repository_ctx, cpu_value, overriden_tools):
                  ],
              ),
              "%{opt_link_flags}": get_starlark_list(

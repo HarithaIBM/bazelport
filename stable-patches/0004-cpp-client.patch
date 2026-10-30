@@ -18,7 +18,7 @@ index 3a5c0ba..d8fb3b2
 diff --git a/src/main/cpp/blaze.cc b/src/main/cpp/blaze.cc
 old mode 100644
 new mode 100755
-index 128104d..33dd1db
+index 128104d..046f938
 --- a/src/main/cpp/blaze.cc
 +++ b/src/main/cpp/blaze.cc
 @@ -1243,6 +1243,11 @@ static map<string, EnvVarValue> PrepareEnvironmentForJvm() {
@@ -41,7 +41,28 @@ index 128104d..33dd1db
  #endif
  
    if (override_locale) {
-@@ -1536,7 +1542,10 @@ int Main(int argc, const char *const *argv, WorkspaceLayout *workspace_layout,
+@@ -1410,7 +1416,7 @@ static void RunLauncher(const string &self_path,
+   vector<string> server_exe_args =
+       GetServerExeArgs(jvm_path, server_jar_path, archive_contents, install_md5,
+                        workspace_layout, workspace, startup_options);
+-#if defined(__OpenBSD__)
++#if defined(__OpenBSD__) || defined(__MVS__)
+   // When spawning the server's JVM process, we normally set argv[0] to
+   // "bazel(workspace)". On OpenBSD, doing so causes the JVM process to fail
+   // during startup; ld.so fails to find a shared library that exists in
+@@ -1423,6 +1429,11 @@ static void RunLauncher(const string &self_path,
+   // own executable, and so the JVM falls back to searching the PATH for
+   // argv[0], which of course fails when argv[0] looks like "bazel(workspace)".
+   //
++  // z/OS: the IBM J9/Semeru launcher (libjli.so) has the same behavior -- it
++  // derives JAVA_HOME from argv[0] and dies with "Unable to find home for
++  // bazel(workspace)" / "CEE3501S The module libjli.so was not found" unless
++  // argv[0] is the real java binary path.
++  //
+   // TODO(aldersondrive): This hack is unnecessary on FreeBSD, but the relevant
+   // OpenJDK code doesn't seem to include anything FreeBSD-specific.
+   // Investigate why and possibly remove this.
+@@ -1536,7 +1547,10 @@ int Main(int argc, const char *const *argv, WorkspaceLayout *workspace_layout,
    return 0;
  }
  
@@ -52,7 +73,7 @@ index 128104d..33dd1db
  
  // There might be a mismatch between std::string and the string type returned
  // from protos. This function is the safe way to compare such strings.
-@@ -1560,7 +1569,9 @@ BlazeServer::BlazeServer(const StartupOptions &startup_options)
+@@ -1560,7 +1574,9 @@ BlazeServer::BlazeServer(const StartupOptions &startup_options)
        preemptible_(startup_options.preemptible),
        output_base_(startup_options.output_base) {
    if (!startup_options.client_debug) {
@@ -320,7 +341,7 @@ index 0000000..fc76f31
 diff --git a/src/main/cpp/util/file_posix.cc b/src/main/cpp/util/file_posix.cc
 old mode 100644
 new mode 100755
-index ffe9788..eec9a4f
+index ffe9788..df24cdd
 --- a/src/main/cpp/util/file_posix.cc
 +++ b/src/main/cpp/util/file_posix.cc
 @@ -136,12 +136,33 @@ string CreateTempDir(const std::string &prefix) {
@@ -370,6 +391,31 @@ index ffe9788..eec9a4f
    if (fd == -1) {
      return false;
    }
+@@ -373,6 +398,16 @@ bool PathExists(const string& path) {
+ bool PathExists(const Path &path) { return PathExists(path.AsNativePath()); }
+ 
+ string MakeCanonical(const char *path) {
++#ifdef __MVS__
++  // z/OS does not support the glibc realpath(path, NULL) extension (it fails
++  // with EINVAL); always pass a caller-provided buffer instead.
++  char resolved_buffer[PATH_MAX];
++  char *resolved_path = realpath(path, resolved_buffer);
++  if (resolved_path == nullptr) {
++    return "";
++  }
++  return string(resolved_path);
++#else
+   char *resolved_path = realpath(path, nullptr);
+   if (resolved_path == nullptr) {
+     return "";
+@@ -381,6 +416,7 @@ string MakeCanonical(const char *path) {
+     free(resolved_path);
+     return ret;
+   }
++#endif
+ }
+ 
+ static bool CanAccess(const string &path, bool read, bool write, bool exec) {
 diff --git a/src/main/cpp/util/md5.cc b/src/main/cpp/util/md5.cc
 old mode 100644
 new mode 100755
