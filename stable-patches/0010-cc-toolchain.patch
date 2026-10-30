@@ -1,0 +1,633 @@
+diff --git a/tools/cpp/BUILD.tpl b/tools/cpp/BUILD.tpl
+old mode 100644
+new mode 100755
+index f99995d..fa27a89
+--- a/tools/cpp/BUILD.tpl
++++ b/tools/cpp/BUILD.tpl
+@@ -85,7 +85,7 @@ cc_toolchain(
+     objcopy_files = ":empty",
+     strip_files = ":empty",
+     supports_header_parsing = 1,
+-    supports_param_files = 1,
++    supports_param_files = %{supports_param_files},
+     module_map = %{modulemap},
+ )
+ 
+@@ -128,7 +128,7 @@ cc_toolchain(
+     linker_files = ":empty",
+     objcopy_files = ":empty",
+     strip_files = ":empty",
+-    supports_param_files = 1,
++    supports_param_files = %{supports_param_files},
+ )
+ 
+ armeabi_cc_toolchain_config(name = "stub_armeabi-v7a")
+diff --git a/tools/cpp/unix_cc_configure.bzl b/tools/cpp/unix_cc_configure.bzl
+index 2184487..ec6acf5 100644
+--- a/tools/cpp/unix_cc_configure.bzl
++++ b/tools/cpp/unix_cc_configure.bzl
+@@ -36,6 +36,14 @@ def _uniq(iterable):
+     return unique_elements.keys()
+ 
+ def _generate_system_module_map(repository_ctx, dirs, script_path):
++    # z/OS: Tag script as ASCII before executing to prevent "Exec format error"
++    os_name = repository_ctx.os.name.lower()
++    if "z/os" in os_name or "os/390" in os_name or os_name == "os390":
++        # Tag the script as ASCII (ISO8859-1) for z/OS
++        tag_result = repository_ctx.execute(["chtag", "-tc", "ISO8859-1", script_path])
++        if tag_result.return_code != 0:
++            # If chtag fails, warn but continue
++            auto_configure_warning("Failed to tag script as ASCII on z/OS: " + tag_result.stderr)
+     return execute(repository_ctx, [script_path] + dirs)
+ 
+ def _prepare_include_path(repo_ctx, path):
+@@ -350,6 +358,15 @@ def configure_unix_toolchain(repository_ctx, cpu_value, overriden_tools):
+     is_clang = _is_clang(repository_ctx, cc)
+     overriden_tools = dict(overriden_tools)
+     overriden_tools["gcc"] = cc
++    # z/OS: links must go through the C++ driver (clang++), which knows how to
++    # set up the Language Environment C++ runtime (CEE.SCEELIB CRTDQ* members,
++    # CELQMAIN entry point). There is no unix -lc++ to link instead.
++    # Compiles must use the plain clang driver (C sources would otherwise be
++    # treated as C++), so a dispatcher wrapper is used for the gcc tool.
++    if ("z/os" in repository_ctx.os.name.lower()
++        or "os/390" in repository_ctx.os.name.lower()
++        or repository_ctx.os.name.lower() == "os390"):
++        overriden_tools["gcc"] = "/home/haritha/code/bazel-7.2.0/bazelport/local_repos/zos_cc_tools/zos_cc"
+     overriden_tools["gcov"] = _find_generic(
+         repository_ctx,
+         "gcov",
+@@ -443,11 +460,18 @@ def configure_unix_toolchain(repository_ctx, cpu_value, overriden_tools):
+     if gold_or_lld_linker_path:
+         force_linker_flags.append("-fuse-ld=" + gold_or_lld_linker_path)
+ 
++    # z/OS: the system binder (IEW) does not support GNU ld options such as
++    # -no-as-needed, --push-state, -z relro or --gc-sections, and the option
++    # probes below misfire on z/OS. Skip all such probes/additions.
++    is_zos = ("z/os" in repository_ctx.os.name.lower()
++              or "os/390" in repository_ctx.os.name.lower()
++              or repository_ctx.os.name.lower() == "os390")
++
+     # TODO: It's unclear why these flags aren't added on macOS.
+     if bin_search_flags and not darwin:
+         force_linker_flags.extend(bin_search_flags)
+     use_libcpp = darwin or bsd
+-    is_as_needed_supported = _is_linker_option_supported(
++    is_as_needed_supported = (not is_zos) and _is_linker_option_supported(
+         repository_ctx,
+         cc,
+         force_linker_flags,
+@@ -584,6 +608,14 @@ def configure_unix_toolchain(repository_ctx, cpu_value, overriden_tools):
+                 "local",
+                 False,
+             )),
++            # z/OS: clang reads Bazel-written ASCII @param files as EBCDIC and
++            # mangles the arguments; pass link/archive inputs on the command
++            # line instead (z/OS ar does not support @param files either).
++            "%{supports_param_files}": ("0" if (
++                "z/os" in repository_ctx.os.name.lower() or
++                "os/390" in repository_ctx.os.name.lower() or
++                repository_ctx.os.name.lower() == "os390"
++            ) else "1"),
+             "%{target_cpu}": escape_string(get_env_var(
+                 repository_ctx,
+                 "BAZEL_TARGET_CPU",
+@@ -601,7 +633,14 @@ def configure_unix_toolchain(repository_ctx, cpu_value, overriden_tools):
+             ),
+             "%{cxx_builtin_include_directories}": get_starlark_list(builtin_include_directories),
+             "%{compile_flags}": get_starlark_list(
+-                [
++                ([
++                    # z/OS: run in Language Environment ASCII character mode so
++                    # that tools reading Bazel-written ASCII files (params
++                    # files, manifests) and ASCII paths work natively.
++                    "-fzos-le-char-mode=ascii",
++                ] if ("z/os" in repository_ctx.os.name.lower()
++                     or "os/390" in repository_ctx.os.name.lower()
++                     or repository_ctx.os.name.lower() == "os390") else []) + [
+                     "-fstack-protector",
+                     # All warnings are enabled.
+                     "-Wall",
+@@ -625,14 +664,24 @@ def configure_unix_toolchain(repository_ctx, cpu_value, overriden_tools):
+             "%{cxx_flags}": get_starlark_list(cxx_opts + _escaped_cplus_include_paths(repository_ctx)),
+             "%{conly_flags}": get_starlark_list(conly_opts),
+             "%{link_flags}": get_starlark_list(force_linker_flags + (
++                # z/OS: librt/libdl/libpthread do not exist as separate archives
++                # (the LE runtime provides them); point the linker at empty stub
++                # archives so that -lrt/-ldl/-lpthread resolve.
++                ["-L/home/haritha/code/bazel-7.2.0/bazelport/local_repos/zos_stub_libs"] if is_zos else []
++            ) + (
++                # z/OS: zoslib provides ASCII-transparent stdio wrappers
++                # (fopen -> __fopen_ascii etc.) needed by tools that read
++                # Bazel-written ASCII files (params files, manifests).
++                ["/home/haritha/zopen_23may/zopen/usr/local/zopen/zoslib/zoslib-v4.0.5.20260618_120743.zos/lib/libzoslib.a"] if is_zos else []
++            ) + (
+                 ["-Wl,-no-as-needed"] if is_as_needed_supported else []
+-            ) + _add_linker_option_if_supported(
++            ) + (([] if is_zos else _add_linker_option_if_supported(
+                 repository_ctx,
+                 cc,
+                 force_linker_flags,
+                 "-Wl,-z,relro,-z,now",
+                 "-z",
+-            ) + (
++            ))) + (
+                 [
+                     "-headerpad_max_install_names",
+                 ] if darwin else [
+@@ -646,7 +695,7 @@ def configure_unix_toolchain(repository_ctx, cpu_value, overriden_tools):
+                     "-pass-exit-codes",
+                 )
+             ) + link_opts),
+-            "%{link_libs}": get_starlark_list(link_libs),
++            "%{link_libs}": get_starlark_list([] if is_zos else link_libs),
+             "%{opt_compile_flags}": get_starlark_list(
+                 [
+                     # No debug symbols.
+@@ -674,13 +723,13 @@ def configure_unix_toolchain(repository_ctx, cpu_value, overriden_tools):
+                 ],
+             ),
+             "%{opt_link_flags}": get_starlark_list(
+-                ["-Wl,-dead_strip"] if darwin else _add_linker_option_if_supported(
++                ["-Wl,-dead_strip"] if darwin else ([] if is_zos else _add_linker_option_if_supported(
+                     repository_ctx,
+                     cc,
+                     force_linker_flags,
+                     "-Wl,--gc-sections",
+                     "-gc-sections",
+-                ),
++                )),
+             ),
+             "%{unfiltered_compile_flags}": get_starlark_list(
+                 _get_no_canonical_prefixes_opt(repository_ctx, cc) + [
+diff --git a/tools/cpp/unix_cc_toolchain_config.bzl b/tools/cpp/unix_cc_toolchain_config.bzl
+old mode 100644
+new mode 100755
+index 1b1b021..330438f
+--- a/tools/cpp/unix_cc_toolchain_config.bzl
++++ b/tools/cpp/unix_cc_toolchain_config.bzl
+@@ -222,6 +222,9 @@ def _sanitizer_feature(name = "", specific_compile_flags = [], specific_link_fla
+     )
+ 
+ def _impl(ctx):
++    # z/OS: detected via BAZEL_TARGET_LIBC=zos env (set by the z/OS build environment).
++    # Defined early — used by several features below.
++    is_zos = ctx.attr.target_libc == "zos"
+     tool_paths = [
+         tool_path(name = name, path = path)
+         for name, path in ctx.attr.tool_paths.items()
+@@ -272,6 +275,16 @@ def _impl(ctx):
+         name = "default_compile_flags",
+         enabled = True,
+         flag_sets = [
++            flag_set(
++                actions = all_compile_actions,
++                flag_groups = ([
++                    flag_group(
++                        # z/OS: enable POSIX/XOPEN declarations (getopt, etc.) in
++                        # system headers. _ALL_SOURCE is IBM's "enable everything" macro.
++                        flags = ["-D_ALL_SOURCE"],
++                    ),
++                ] if is_zos else []),
++            ),
+             flag_set(
+                 actions = all_compile_actions,
+                 flag_groups = [
+@@ -839,9 +852,12 @@ def _impl(ctx):
+         ],
+     )
+ 
++    # z/OS: the binder does not support the GNU ld -S option (and the exec
++    # configuration force-enables this feature via strip=ALWAYS, so the feature
++    # cannot simply be disabled) — omit the flag set entirely on z/OS.
+     strip_debug_symbols_feature = feature(
+         name = "strip_debug_symbols",
+-        flag_sets = [
++        flag_sets = [] if is_zos else [
+             flag_set(
+                 actions = all_link_actions + lto_index_actions,
+                 flag_groups = [
+@@ -901,7 +917,7 @@ def _impl(ctx):
+                                 ),
+                             ),
+                             flag_group(
+-                                flags = ["-Wl,-whole-archive"],
++                                flags = ["-Wl,-whole-archive"] if not is_zos else ["-Wl,"],
+                                 expand_if_true =
+                                     "libraries_to_link.is_whole_archive",
+                                 expand_if_equal = variable_with_value(
+@@ -953,7 +969,7 @@ def _impl(ctx):
+                                 ),
+                             ),
+                             flag_group(
+-                                flags = ["-Wl,-no-whole-archive"],
++                                flags = ["-Wl,-no-whole-archive"] if not is_zos else ["-Wl,"],
+                                 expand_if_true = "libraries_to_link.is_whole_archive",
+                                 expand_if_equal = variable_with_value(
+                                     name = "libraries_to_link.type",
+@@ -1058,7 +1074,7 @@ def _impl(ctx):
+                 flag_groups = [
+                     flag_group(
+                         flags = [
+-                            "rcsD" if is_linux else "rcs",
++                            "rc" if is_zos else ("rcsD" if is_linux else "rcs"),
+                             "%{output_execpath}",
+                         ],
+                         expand_if_available = "output_execpath",
+@@ -1362,7 +1378,8 @@ def _impl(ctx):
+ 
+     archive_param_file_feature = feature(
+         name = "archive_param_file",
+-        enabled = True,
++        # z/OS: /bin/ar does not support @param files
++        enabled = not is_zos,
+     )
+ 
+     asan_feature = _sanitizer_feature(
+@@ -1432,6 +1449,11 @@ def _impl(ctx):
+         artifact_name_patterns = []
+         features = [
+             dependency_file_feature,
++            # z/OS: IBM Open XL clang writes EBCDIC (IBM-1047-tagged) depfiles that
++            # Bazel's Java parser cannot read. Enable no_dotd_file at the TOOLCHAIN
++            # level so it applies to both target and exec configurations (the
++            # --features flag only reaches the target config).
++            feature(name = "no_dotd_file", enabled = True),
+             serialized_diagnostics_file_feature,
+             random_seed_feature,
+             pic_feature,
+diff --git a/tools/cpp/BUILD.zos b/tools/cpp/BUILD.zos
+new file mode 100644
+index 0000000..9faaba6
+--- /dev/null
++++ b/tools/cpp/BUILD.zos
+@@ -0,0 +1,80 @@
++# z/OS C++ Toolchain BUILD file
++# This becomes the BUILD file for local C++ toolchain on z/OS
++
++load(":zos_cc_toolchain_config.bzl", "zos_cc_toolchain_config")
++load("@rules_cc//cc:defs.bzl", "cc_library", "cc_toolchain", "cc_toolchain_suite")
++
++package(default_visibility = ["//visibility:public"])
++
++# Empty libraries for linking
++cc_library(name = "empty_lib")
++cc_library(name = "malloc")
++
++filegroup(
++    name = "empty",
++    srcs = [],
++)
++
++# All compiler files (for sandboxing)
++filegroup(
++    name = "compiler_files",
++    srcs = [":empty"],
++)
++
++filegroup(
++    name = "linker_files",
++    srcs = [":empty"],
++)
++
++filegroup(
++    name = "ar_files",
++    srcs = [":empty"],
++)
++
++filegroup(
++    name = "all_files",
++    srcs = [":empty"],
++)
++
++# Label flag for extra libraries
++label_flag(
++    name = "link_extra_libs",
++    build_setting_default = ":empty_lib",
++)
++
++cc_library(
++    name = "link_extra_lib",
++    deps = [":link_extra_libs"],
++)
++
++# Toolchain suite
++cc_toolchain_suite(
++    name = "toolchain",
++    toolchains = {
++        "zos|clang": ":cc-compiler-zos",
++        "s390x|clang": ":cc-compiler-zos",
++        "zos": ":cc-compiler-zos",
++        "s390x": ":cc-compiler-zos",
++    },
++)
++
++# z/OS clang toolchain
++cc_toolchain(
++    name = "cc-compiler-zos",
++    all_files = ":all_files",
++    ar_files = ":ar_files",
++    as_files = ":empty",
++    compiler_files = ":compiler_files",
++    dwp_files = ":empty",
++    linker_files = ":linker_files",
++    objcopy_files = ":empty",
++    strip_files = ":empty",
++    supports_param_files = 1,
++    toolchain_config = ":local_zos",
++    toolchain_identifier = "zos-clang-toolchain",
++)
++
++# Toolchain configuration
++zos_cc_toolchain_config(
++    name = "local_zos",
++)
+diff --git a/tools/cpp/zos_cc_toolchain_config.bzl b/tools/cpp/zos_cc_toolchain_config.bzl
+new file mode 100644
+index 0000000..30260fb
+--- /dev/null
++++ b/tools/cpp/zos_cc_toolchain_config.bzl
+@@ -0,0 +1,210 @@
++# z/OS C++ Toolchain Configuration for Bazel
++# This file defines a minimal C++ toolchain for IBM z/OS using clang
++
++load(
++    "@bazel_tools//tools/cpp:cc_toolchain_config_lib.bzl",
++    "action_config",
++    "feature",
++    "flag_group",
++    "flag_set",
++    "tool",
++    "tool_path",
++    "with_feature_set",
++)
++load("@bazel_tools//tools/build_defs/cc:action_names.bzl", "ACTION_NAMES")
++
++all_compile_actions = [
++    ACTION_NAMES.c_compile,
++    ACTION_NAMES.cpp_compile,
++    ACTION_NAMES.linkstamp_compile,
++    ACTION_NAMES.assemble,
++    ACTION_NAMES.preprocess_assemble,
++    ACTION_NAMES.cpp_header_parsing,
++    ACTION_NAMES.cpp_module_compile,
++    ACTION_NAMES.cpp_module_codegen,
++    ACTION_NAMES.clif_match,
++    ACTION_NAMES.lto_backend,
++]
++
++all_cpp_compile_actions = [
++    ACTION_NAMES.cpp_compile,
++    ACTION_NAMES.linkstamp_compile,
++    ACTION_NAMES.cpp_header_parsing,
++    ACTION_NAMES.cpp_module_compile,
++    ACTION_NAMES.cpp_module_codegen,
++    ACTION_NAMES.clif_match,
++]
++
++all_link_actions = [
++    ACTION_NAMES.cpp_link_executable,
++    ACTION_NAMES.cpp_link_dynamic_library,
++    ACTION_NAMES.cpp_link_nodeps_dynamic_library,
++]
++
++def _impl(ctx):
++    toolchain_identifier = "zos-clang-toolchain"
++    host_system_name = "zos"
++    target_system_name = "zos"
++    target_cpu = "s390x"
++    target_libc = "zos"
++    compiler = "clang"
++    abi_version = "local"
++    abi_libc_version = "local"
++
++    # Path to IBM Open XL C/C++ compiler
++    clang_bin = "/home/haritha/install_test/usr/lpp/IBM/oelcpp/v3r0/bin"
++    # Path to protobuf/grpc (from zopen)
++    zopen_root = "/home/haritha/zopen_23may/zopen/usr/local"
++
++    tool_paths = [
++        tool_path(name = "gcc", path = clang_bin + "/clang"),
++        tool_path(name = "g++", path = clang_bin + "/clang++"),
++        tool_path(name = "cpp", path = clang_bin + "/clang"),
++        tool_path(name = "ar", path = "/bin/ar"),
++        tool_path(name = "ld", path = clang_bin + "/clang++"),  # Use clang++ for linking
++        tool_path(name = "nm", path = "/bin/nm"),
++        tool_path(name = "objdump", path = "/bin/objdump"),
++        tool_path(name = "strip", path = "/bin/strip"),
++        tool_path(name = "gcov", path = "/bin/false"),  # Not available
++        tool_path(name = "dwp", path = "/bin/false"),   # Not available
++    ]
++
++    # Default compile flags for z/OS
++    default_compile_flags_feature = feature(
++        name = "default_compile_flags",
++        enabled = True,
++        flag_sets = [
++            flag_set(
++                actions = all_compile_actions,
++                flag_groups = [
++                    flag_group(
++                        flags = [
++                            "-I" + zopen_root + "/include",  # protobuf/grpc headers
++                            "-U_FORTIFY_SOURCE",
++                            "-D_FORTIFY_SOURCE=1",
++                            "-fstack-protector",
++                            "-Wall",
++                            "-Wno-builtin-macro-redefined",
++                            "-D__DATE__=\"redacted\"",
++                            "-D__TIMESTAMP__=\"redacted\"",
++                            "-D__TIME__=\"redacted\"",
++                        ],
++                    ),
++                ],
++            ),
++            flag_set(
++                actions = all_compile_actions,
++                flag_groups = [flag_group(flags = ["-g"])],
++                with_features = [with_feature_set(features = ["dbg"])],
++            ),
++            flag_set(
++                actions = all_compile_actions,
++                flag_groups = [
++                    flag_group(
++                        flags = [
++                            "-g0",
++                            "-O2",
++                            "-DNDEBUG",
++                            "-ffunction-sections",
++                            "-fdata-sections",
++                        ],
++                    ),
++                ],
++                with_features = [with_feature_set(features = ["opt"])],
++            ),
++        ],
++    )
++
++    # C++ specific flags
++    default_cxx_flags_feature = feature(
++        name = "default_cxx_flags",
++        enabled = True,
++        flag_sets = [
++            flag_set(
++                actions = all_cpp_compile_actions,
++                flag_groups = [
++                    flag_group(
++                        flags = [
++                            "-std=c++14",  # Bazel requires at least C++14
++                        ],
++                    ),
++                ],
++            ),
++        ],
++    )
++
++    # Link flags for z/OS
++    default_link_flags_feature = feature(
++        name = "default_link_flags",
++        enabled = True,
++        flag_sets = [
++            flag_set(
++                actions = all_link_actions,
++                flag_groups = [
++                    flag_group(
++                        flags = [
++                            "-L" + zopen_root + "/lib",  # protobuf/grpc libraries
++                            "-lgrpc++",
++                            "-lgrpc",
++                            "-lprotobuf",
++                            "-lstdc++",
++                            "-lm",  # Math library
++                        ],
++                    ),
++                ],
++            ),
++            flag_set(
++                actions = all_link_actions,
++                flag_groups = [
++                    flag_group(
++                        flags = [
++                            "-Wl,--gc-sections",  # Remove unused sections
++                        ],
++                    ),
++                ],
++                with_features = [with_feature_set(features = ["opt"])],
++            ),
++        ],
++    )
++
++    # Optimization features
++    opt_feature = feature(name = "opt")
++    dbg_feature = feature(name = "dbg")
++    fastbuild_feature = feature(name = "fastbuild")
++
++    # PIC support
++    supports_pic_feature = feature(name = "supports_pic", enabled = True)
++
++    # Dynamic linking support
++    supports_dynamic_linker_feature = feature(name = "supports_dynamic_linker", enabled = True)
++
++    features = [
++        default_compile_flags_feature,
++        default_cxx_flags_feature,
++        default_link_flags_feature,
++        opt_feature,
++        dbg_feature,
++        fastbuild_feature,
++        supports_pic_feature,
++        supports_dynamic_linker_feature,
++    ]
++
++    return cc_common.create_cc_toolchain_config_info(
++        ctx = ctx,
++        toolchain_identifier = toolchain_identifier,
++        host_system_name = host_system_name,
++        target_system_name = target_system_name,
++        target_cpu = target_cpu,
++        target_libc = target_libc,
++        compiler = compiler,
++        abi_version = abi_version,
++        abi_libc_version = abi_libc_version,
++        tool_paths = tool_paths,
++        features = features,
++    )
++
++zos_cc_toolchain_config = rule(
++    implementation = _impl,
++    attrs = {},
++    provides = [CcToolchainConfigInfo],
++)
+diff --git a/zos_toolchain/BUILD b/zos_toolchain/BUILD
+new file mode 100644
+index 0000000..36d0def
+--- /dev/null
++++ b/zos_toolchain/BUILD
+@@ -0,0 +1,52 @@
++# z/OS toolchain definitions
++
++load("@bazel_tools//tools/jdk:default_java_toolchain.bzl", "default_java_toolchain")
++load(":constraints.bzl", "is_zos")
++
++package(default_visibility = ["//visibility:public"])
++
++# z/OS Java runtime
++java_runtime(
++    name = "zos_java_runtime",
++    java_home = "/usr/lpp/java/J21.0_64",
++    visibility = ["//visibility:public"],
++)
++
++# z/OS Java runtime toolchain
++toolchain(
++    name = "zos_java_runtime_toolchain",
++    exec_compatible_with = [
++        ":is_zos",
++        "@platforms//cpu:s390x",
++    ],
++    target_compatible_with = [
++        ":is_zos",
++        "@platforms//cpu:s390x",
++    ],
++    toolchain = ":zos_java_runtime",
++    toolchain_type = "@bazel_tools//tools/jdk:runtime_toolchain_type",
++)
++
++# Bootstrap runtime (same as main runtime for z/OS)
++toolchain(
++    name = "zos_java_bootstrap_runtime_toolchain",
++    exec_compatible_with = [
++        ":is_zos",
++        "@platforms//cpu:s390x",
++    ],
++    target_compatible_with = [
++        ":is_zos",
++        "@platforms//cpu:s390x",
++    ],
++    toolchain = ":zos_java_runtime",
++    toolchain_type = "@bazel_tools//tools/jdk:bootstrap_runtime_toolchain_type",
++)
++
++# z/OS platform definition
++platform(
++    name = "zos_platform",
++    constraint_values = [
++        ":is_zos",
++        "@platforms//cpu:s390x",
++    ],
++)
+diff --git a/zos_toolchain/constraints.bzl b/zos_toolchain/constraints.bzl
+new file mode 100644
+index 0000000..f1704d2
+--- /dev/null
++++ b/zos_toolchain/constraints.bzl
+@@ -0,0 +1,9 @@
++# z/OS platform constraints
++
++constraint_setting(name = "zos")
++
++constraint_value(
++    name = "is_zos",
++    constraint_setting = ":zos",
++    visibility = ["//visibility:public"],
++)

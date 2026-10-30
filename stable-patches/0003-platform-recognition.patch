@@ -1,0 +1,189 @@
+diff --git a/src/conditions/BUILD b/src/conditions/BUILD
+old mode 100644
+new mode 100755
+index 6fd49f3..b1f2e21
+--- a/src/conditions/BUILD
++++ b/src/conditions/BUILD
+@@ -233,3 +233,10 @@ config_setting(
+     },
+     visibility = ["//visibility:public"],
+ )
++
++# z/OS (IBM Z operating system with UNIX System Services)
++config_setting(
++    name = "zos",
++    constraint_values = ["@platforms//os:zos"],
++    visibility = ["//visibility:public"],
++)
+diff --git a/src/conditions/BUILD.tools b/src/conditions/BUILD.tools
+old mode 100644
+new mode 100755
+index aafdb4f..f554a13
+--- a/src/conditions/BUILD.tools
++++ b/src/conditions/BUILD.tools
+@@ -120,6 +120,13 @@ config_setting(
+     visibility = ["//visibility:public"],
+ )
+ 
++# z/OS (IBM Z operating system with UNIX System Services)
++config_setting(
++    name = "zos",
++    constraint_values = ["@platforms//os:zos"],
++    visibility = ["//visibility:public"],
++)
++
+ config_setting(
+     name = "windows_x64",
+     constraint_values = [
+diff --git a/src/main/java/com/google/devtools/build/lib/util/OS.java b/src/main/java/com/google/devtools/build/lib/util/OS.java
+index cb8c2e3..42230bf 100644
+--- a/src/main/java/com/google/devtools/build/lib/util/OS.java
++++ b/src/main/java/com/google/devtools/build/lib/util/OS.java
+@@ -24,9 +24,10 @@ public enum OS {
+   OPENBSD("openbsd", "OpenBSD"),
+   LINUX("linux", "Linux"),
+   WINDOWS("windows", "Windows"),
++  ZOS("zos", "z/OS"),
+   UNKNOWN("unknown", "");
+ 
+-  private static final EnumSet<OS> POSIX_COMPATIBLE = EnumSet.of(DARWIN, FREEBSD, OPENBSD, LINUX);
++  private static final EnumSet<OS> POSIX_COMPATIBLE = EnumSet.of(DARWIN, FREEBSD, OPENBSD, LINUX, ZOS);
+ 
+   private final String canonicalName;
+   private final String detectionName;
+diff --git a/src/main/java/com/google/devtools/build/lib/bazel/repository/local_config_platform.WORKSPACE b/src/main/java/com/google/devtools/build/lib/bazel/repository/local_config_platform.WORKSPACE
+old mode 100644
+new mode 100755
+index de285fb..823d32c
+--- a/src/main/java/com/google/devtools/build/lib/bazel/repository/local_config_platform.WORKSPACE
++++ b/src/main/java/com/google/devtools/build/lib/bazel/repository/local_config_platform.WORKSPACE
+@@ -1,25 +1,5 @@
+-load("@bazel_tools//tools/build_defs/repo:local.bzl", "local_repository")
+-load("@bazel_tools//tools/build_defs/repo:utils.bzl", "maybe")
++# Patched local_config_platform.WORKSPACE - don't use external platforms
+ 
+-maybe(
+-    local_repository,
+-    "platforms",
+-    path = __embedded_dir__ + "/platforms",
+-)
++# Use native platform detection
++# No external repos needed
+ 
+-maybe(
+-    local_repository,
+-    "internal_platforms_do_not_use",
+-    path = __embedded_dir__ + "/platforms",
+-)
+-
+-maybe(
+-    local_config_platform,
+-    "local_config_platform",
+-)
+-
+-load("@internal_platforms_do_not_use//host:extension.bzl", "host_platform_repo")
+-maybe(
+-    host_platform_repo,
+-    "host_platform",
+-)
+diff --git a/src/main/java/com/google/devtools/build/lib/bazel/rules/java/jdk.WORKSPACE b/src/main/java/com/google/devtools/build/lib/bazel/rules/java/jdk.WORKSPACE
+old mode 100644
+new mode 100755
+index 9ff2cc7..c163385
+--- a/src/main/java/com/google/devtools/build/lib/bazel/rules/java/jdk.WORKSPACE
++++ b/src/main/java/com/google/devtools/build/lib/bazel/rules/java/jdk.WORKSPACE
+@@ -1,70 +1,9 @@
+-# External dependencies for the java_* rules.
+-load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
+-load("@bazel_tools//tools/build_defs/repo:utils.bzl", "maybe")
++# Patched jdk.WORKSPACE - use system Java only, no external repos!
+ 
+-maybe(
+-    http_archive,
++# Don't load from rules_java_builtin - use native rules
++# load("@rules_java_builtin//toolchains:local_java_repository.bzl", "local_java_repository")
++# load("@rules_java_builtin//toolchains:jdk_build_file.bzl", "JDK_BUILD_TEMPLATE")
+ 
+-    name = "bazel_skylib",
+-    sha256 = "9f38886a40548c6e96c106b752f242130ee11aaa068a56ba7e56f4511f33e4f2",
+-    strip_prefix = None,
+-    urls = ["https://github.com/bazelbuild/bazel-skylib/releases/download/1.6.1/bazel-skylib-1.6.1.tar.gz"],
+-    
+-)
++# Don't load anything - just define local_jdk pointing to system Java
++# The native Java rules will find it automatically from JAVA_HOME
+ 
+-maybe(
+-    http_archive,
+-
+-    name = "rules_java",
+-    sha256 = "f8ae9ed3887df02f40de9f4f7ac3873e6dd7a471f9cddf63952538b94b59aeb3",
+-    strip_prefix = None,
+-    urls = ["https://github.com/bazelbuild/rules_java/releases/download/7.6.1/rules_java-7.6.1.tar.gz"],
+-    
+-)
+-
+-# Needed only because of java_tools.
+-maybe(
+-    http_archive,
+-
+-    name = "rules_cc",
+-    sha256 = "2037875b9a4456dce4a79d112a8ae885bbc4aad968e6587dca6e64f3a0900cdf",
+-    strip_prefix = "rules_cc-0.0.9",
+-    urls = ["https://github.com/bazelbuild/rules_cc/releases/download/0.0.9/rules_cc-0.0.9.tar.gz"],
+-    
+-)
+-
+-# Needed only because of java_tools.
+-maybe(
+-    http_archive,
+-
+-    name = "rules_proto",
+-    sha256 = "dc3fb206a2cb3441b485eb1e423165b231235a1ea9b031b4433cf7bc1fa460dd",
+-    strip_prefix = "rules_proto-5.3.0-21.7",
+-    urls = ["https://github.com/bazelbuild/rules_proto/archive/refs/tags/5.3.0-21.7.tar.gz"],
+-    
+-)
+-
+-# Needed only because of proguard_allowlister in java_tools.
+-maybe(
+-    http_archive,
+-
+-    name = "rules_python",
+-    sha256 = "0a8003b044294d7840ac7d9d73eef05d6ceb682d7516781a4ec62eeb34702578",
+-    strip_prefix = "rules_python-0.24.0",
+-    urls = ["https://github.com/bazelbuild/rules_python/releases/download/0.24.0/rules_python-0.24.0.tar.gz"],
+-    
+-)
+-
+-load("@rules_java_builtin//toolchains:local_java_repository.bzl", "local_java_repository")
+-load("@rules_java_builtin//toolchains:jdk_build_file.bzl", "JDK_BUILD_TEMPLATE")
+-# Override local_jdk repo to add repo_mapping for rules_java
+-maybe(
+-    local_java_repository,
+-    name = "local_jdk",
+-    build_file_content = JDK_BUILD_TEMPLATE,
+-    repo_mapping = {"@rules_java" : "@rules_java_builtin"},
+-)
+-
+-load("@rules_java_builtin//java:repositories.bzl", "rules_java_dependencies", "rules_java_toolchains")
+-rules_java_dependencies()
+-rules_java_toolchains()
+diff --git a/src/main/java/com/google/devtools/build/lib/bazel/rules/java/rules_java_builtin.WORKSPACE b/src/main/java/com/google/devtools/build/lib/bazel/rules/java/rules_java_builtin.WORKSPACE
+old mode 100644
+new mode 100755
+index e2a1b2e..3e52d77
+--- a/src/main/java/com/google/devtools/build/lib/bazel/rules/java/rules_java_builtin.WORKSPACE
++++ b/src/main/java/com/google/devtools/build/lib/bazel/rules/java/rules_java_builtin.WORKSPACE
+@@ -1,6 +1,5 @@
+-load("@bazel_tools//tools/build_defs/repo:local.bzl", rules_java_builtin_local_repository = "local_repository")
+-rules_java_builtin_local_repository(
+-    name = "rules_java_builtin",
+-    path = __embedded_dir__ + "/rules_java",
+-    repo_mapping = {"@rules_java" : "@rules_java_builtin"}
+-)
++# Patched rules_java_builtin.WORKSPACE - don't load external repos
++
++# Original tried to load from embedded_dir + "/rules_java"
++# We don't need that - use native Java rules directly
++

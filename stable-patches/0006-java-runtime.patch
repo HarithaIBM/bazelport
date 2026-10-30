@@ -1,0 +1,773 @@
+diff --git a/src/main/java/com/google/devtools/build/lib/bazel/Bazel.java b/src/main/java/com/google/devtools/build/lib/bazel/Bazel.java
+index 2e139f5..9f1431b 100644
+--- a/src/main/java/com/google/devtools/build/lib/bazel/Bazel.java
++++ b/src/main/java/com/google/devtools/build/lib/bazel/Bazel.java
+@@ -48,9 +48,9 @@ public final class Bazel {
+           // This module needs to be registered before any module that uses the credential cache.
+           CredentialModule.class,
+           com.google.devtools.build.lib.runtime.CommandLogModule.class,
+-          com.google.devtools.build.lib.runtime.MemoryPressureModule.class,
++          //           //           //           com.google.devtools.build.lib.runtime.MemoryPressureModule.class,  // z/OS: Disabled - IBM J9 GC not recognized  // z/OS: Disabled - IBM J9 GC not recognized  // z/OS: Disabled - IBM J9 GC not recognized
+           com.google.devtools.build.lib.platform.SleepPreventionModule.class,
+-          com.google.devtools.build.lib.platform.SystemSuspensionModule.class,
++          //           //           //           com.google.devtools.build.lib.platform.SystemSuspensionModule.class,  // z/OS: Disabled - JNI library not available  // z/OS: Disabled - JNI library not available  // z/OS: Disabled - JNI library not available
+           BazelFileSystemModule.class,
+           com.google.devtools.build.lib.runtime.mobileinstall.MobileInstallModule.class,
+           com.google.devtools.build.lib.bazel.BazelWorkspaceStatusModule.class,
+@@ -92,6 +92,13 @@ public final class Bazel {
+           com.google.devtools.build.lib.runtime.BlockWaitingModule.class);
+ 
+   public static void main(String[] args) {
++    // z/OS DEBUG: Log all command line arguments
++    System.err.println("[Z/OS-DEBUG] Bazel.main() called with " + args.length + " arguments:");
++    for (int i = 0; i < args.length; i++) {
++      System.err.println("[Z/OS-DEBUG]   args[" + i + "] = " + args[i]);
++    }
++    System.err.flush();
++    
+     BlazeVersionInfo.setBuildInfo(tryGetBuildInfo());
+     BlazeRuntime.main(BAZEL_MODULES, args);
+   }
+diff --git a/src/main/java/com/google/devtools/build/lib/bazel/debug/BUILD b/src/main/java/com/google/devtools/build/lib/bazel/debug/BUILD
+old mode 100644
+new mode 100755
+index f85cc4a..d6a55b4
+--- a/src/main/java/com/google/devtools/build/lib/bazel/debug/BUILD
++++ b/src/main/java/com/google/devtools/build/lib/bazel/debug/BUILD
+@@ -20,14 +20,14 @@ proto_library(
+     srcs = ["workspace_log.proto"],
+ )
+ 
+-java_proto_library(
++alias(
+     name = "workspace_log_java_proto",
+-    deps = [":workspace_log_proto"],
++    actual = "//src/main/protobuf:all_java_protos",
+ )
+ 
+-java_library_srcs(
++filegroup(
+     name = "workspace_log_java_proto_srcs",
+-    deps = [":workspace_log_java_proto"],
++    srcs = ["//:pre_generated_proto_files"],
+ )
+ 
+ filegroup(
+diff --git a/src/main/java/com/google/devtools/build/lib/buildtool/BuildTool.java b/src/main/java/com/google/devtools/build/lib/buildtool/BuildTool.java
+old mode 100644
+new mode 100755
+index c637885..f53d2f6
+--- a/src/main/java/com/google/devtools/build/lib/buildtool/BuildTool.java
++++ b/src/main/java/com/google/devtools/build/lib/buildtool/BuildTool.java
+@@ -148,6 +148,11 @@ public class BuildTool {
+           TargetParsingException, LoadingFailedException, AbruptExitException,
+           InvalidConfigurationException, TestExecException, ExitException,
+           PostExecutionActionGraphDumpException, RepositoryMappingResolutionException {
++    // z/OS DEBUG: Log build request
++    System.err.println("[Z/OS-DEBUG] BuildTool.buildTargets() called");
++    System.err.println("[Z/OS-DEBUG]   Request targets: " + request.getTargets());
++    System.err.flush();
++    
+     try (SilentCloseable c = Profiler.instance().profile("validateOptions")) {
+       validateOptions(request);
+     }
+@@ -469,6 +474,13 @@ public class BuildTool {
+   }
+ 
+   private void reportExceptionError(Exception e) {
++    // z/OS DEBUG: Log exception being reported
++    System.err.println("[Z/OS-DEBUG] reportExceptionError() called:");
++    System.err.println("[Z/OS-DEBUG]   Exception type: " + e.getClass().getName());
++    System.err.println("[Z/OS-DEBUG]   Message: " + e.getMessage());
++    e.printStackTrace(System.err);
++    System.err.flush();
++    
+     if (e.getMessage() != null) {
+       getReporter().handle(Event.error(e.getMessage()));
+     }
+@@ -592,6 +604,14 @@ public class BuildTool {
+                   .build());
+       reportExceptionError(e);
+     } catch (Throwable throwable) {
++      // z/OS DEBUG: Log exception details
++      System.err.println("[Z/OS-DEBUG] BuildTool caught Throwable:");
++      System.err.println("[Z/OS-DEBUG]   Exception type: " + throwable.getClass().getName());
++      System.err.println("[Z/OS-DEBUG]   Message: " + throwable.getMessage());
++      System.err.println("[Z/OS-DEBUG]   Stack trace:");
++      throwable.printStackTrace(System.err);
++      System.err.flush();
++      
+       crash = throwable;
+       detailedExitCode = CrashFailureDetails.detailedExitCodeForThrowable(crash);
+       Throwables.throwIfUnchecked(throwable);
+diff --git a/src/main/java/com/google/devtools/build/lib/exec/FileWriteStrategy.java b/src/main/java/com/google/devtools/build/lib/exec/FileWriteStrategy.java
+old mode 100644
+new mode 100755
+index dce4893..56b87f3
+--- a/src/main/java/com/google/devtools/build/lib/exec/FileWriteStrategy.java
++++ b/src/main/java/com/google/devtools/build/lib/exec/FileWriteStrategy.java
+@@ -62,6 +62,24 @@ public final class FileWriteStrategy implements FileWriteActionContext {
+         if (makeExecutable) {
+           outputPath.setExecutable(true);
+         }
++        // z/OS: Tag the file as ISO8859-1 (ASCII) so that the kernel's exec()
++        // can parse the shebang line. Without this, untagged files are read
++        // as EBCDIC, causing "EDC5130I Exec format error" for generated
++        // scripts (java_binary launchers, python wrappers, etc.).
++        if (System.getProperty("os.name").toLowerCase().contains("z/os")
++            || System.getProperty("os.name").toLowerCase().contains("os/390")) {
++          try {
++            String absPath = new java.io.File(outputPath.getPathString()).getAbsolutePath();
++            ProcessBuilder pb =
++                new ProcessBuilder("/bin/chtag", "-tc", "ISO8859-1", absPath);
++            pb.redirectErrorStream(true);
++            Process tagProcess = pb.start();
++            tagProcess.waitFor();
++          } catch (Exception e) {
++            // Best effort — if chtag fails, the file may still work if
++            // the system is configured for auto-conversion.
++          }
++        }
+       } catch (IOException e) {
+         throw new EnvironmentalExecException(e, Code.FILE_WRITE_IO_EXCEPTION);
+       }
+diff --git a/src/main/java/com/google/devtools/build/lib/jni/JniLoader.java b/src/main/java/com/google/devtools/build/lib/jni/JniLoader.java
+old mode 100644
+new mode 100755
+index 5ba0a8a..5a05c1e
+--- a/src/main/java/com/google/devtools/build/lib/jni/JniLoader.java
++++ b/src/main/java/com/google/devtools/build/lib/jni/JniLoader.java
+@@ -49,6 +49,10 @@ public final class JniLoader {
+           loadLibrary("main/native/libunix_jni.dylib");
+           break;
+ 
++        case ZOS:
++          // z/OS: JNI not available in bootstrap, will be compiled in later stages
++          throw new UnsatisfiedLinkError("JNI not available for z/OS bootstrap");
++
+         case WINDOWS:
+           try {
+             // TODO(jmmv): This is here only for the bootstrapping process, which builds the JNI
+diff --git a/src/main/java/com/google/devtools/build/lib/metrics/GarbageCollectionMetricsUtils.java b/src/main/java/com/google/devtools/build/lib/metrics/GarbageCollectionMetricsUtils.java
+index 6d7e43e..e8903d9 100644
+--- a/src/main/java/com/google/devtools/build/lib/metrics/GarbageCollectionMetricsUtils.java
++++ b/src/main/java/com/google/devtools/build/lib/metrics/GarbageCollectionMetricsUtils.java
+@@ -25,7 +25,9 @@ public final class GarbageCollectionMetricsUtils {
+         || "PS Old Gen".equals(name)
+         || "Tenured Gen".equals(name)
+         || "Shenandoah".equals(name)
+-        || "ZHeap".equals(name);
++        || "ZHeap".equals(name)
++        || name.contains("tenured") || name.contains("global")
++        || name.contains("SOA") || name.contains("LOA");
+   }
+ 
+   public static boolean isFullGc(GarbageCollectionNotificationInfo info) {
+diff --git a/src/main/java/com/google/devtools/build/lib/packages/Package.java b/src/main/java/com/google/devtools/build/lib/packages/Package.java
+old mode 100644
+new mode 100755
+index 3f228f2..23b2798
+--- a/src/main/java/com/google/devtools/build/lib/packages/Package.java
++++ b/src/main/java/com/google/devtools/build/lib/packages/Package.java
+@@ -359,7 +359,18 @@ public class Package {
+ 
+     this.containsErrors |= builder.containsErrors;
+     if (directLoads == null && transitiveLoads == null) {
+-      Preconditions.checkState(containsErrors, "Loads not set for error-free package");
++      // Z/OS BOOTSTRAP PATCH: Allow null loads in bootstrap mode
++      // In bootstrap mode, .bzl files can't be loaded due to circular dependencies
++      // So we skip the check and just set empty loads
++      String zosBootstrapMode = System.getProperty("ZOS_BOOTSTRAP_MODE");
++      boolean isBootstrap = "true".equals(zosBootstrapMode);
++      
++      if (!isBootstrap) {
++        // Normal mode: enforce the check
++        Preconditions.checkState(containsErrors, "Loads not set for error-free package");
++      }
++      // END Z/OS BOOTSTRAP PATCH
++      
+       builder.setLoads(ImmutableList.of());
+     }
+ 
+diff --git a/src/main/java/com/google/devtools/build/lib/packages/metrics/BUILD b/src/main/java/com/google/devtools/build/lib/packages/metrics/BUILD
+old mode 100644
+new mode 100755
+index 23d2309..beb4199
+--- a/src/main/java/com/google/devtools/build/lib/packages/metrics/BUILD
++++ b/src/main/java/com/google/devtools/build/lib/packages/metrics/BUILD
+@@ -43,16 +43,14 @@ proto_library(
+     ],
+ )
+ 
+-java_proto_library(
++alias(
+     name = "package_metrics_java_proto",
+-    deps = [
+-        ":package_metrics_proto",
+-    ],
++    actual = "//src/main/protobuf:all_java_protos",
+ )
+ 
+-java_library_srcs(
++filegroup(
+     name = "package_metrics_java_proto_srcs",
+-    deps = [":package_metrics_java_proto"],
++    srcs = ["//:pre_generated_proto_files"],
+ )
+ 
+ proto_library(
+@@ -63,16 +61,14 @@ proto_library(
+     ],
+ )
+ 
+-java_proto_library(
++alias(
+     name = "package_load_metrics_java_proto",
+-    deps = [
+-        ":package_load_metrics_proto",
+-    ],
++    actual = "//src/main/protobuf:all_java_protos",
+ )
+ 
+-java_library_srcs(
++filegroup(
+     name = "package_load_metrics_java_proto_srcs",
+-    deps = [":package_load_metrics_java_proto"],
++    srcs = ["//:pre_generated_proto_files"],
+ )
+ 
+ filegroup(
+diff --git a/src/main/java/com/google/devtools/build/lib/repository/ExternalPackageHelper.java b/src/main/java/com/google/devtools/build/lib/repository/ExternalPackageHelper.java
+old mode 100644
+new mode 100755
+index 4f21aef..e69fb6c
+--- a/src/main/java/com/google/devtools/build/lib/repository/ExternalPackageHelper.java
++++ b/src/main/java/com/google/devtools/build/lib/repository/ExternalPackageHelper.java
+@@ -130,8 +130,13 @@ public class ExternalPackageHelper {
+ 
+     @Override
+     public boolean processAndShouldContinue(WorkspaceFileValue workspaceFileValue) {
++      // Z/OS BOOTSTRAP PATCH: In bootstrap mode, still process WORKSPACE but skip error checking
++      String zosMode = System.getProperty("ZOS_BOOTSTRAP_MODE");
++      boolean isBootstrap = "true".equals(zosMode);
++      
+       Package externalPackage = workspaceFileValue.getPackage();
+-      if (externalPackage.containsErrors()) {
++      if (externalPackage.containsErrors() && !isBootstrap) {
++        // Normal mode: stop on errors
+         exception =
+             new ExternalPackageException(
+                 new BuildFileContainsErrorsException(
+@@ -141,6 +146,7 @@ public class ExternalPackageHelper {
+         // Stop iteration when encountered errors.
+         return false;
+       }
++      // Both modes: try to find the rule
+       rule = externalPackage.getRule(ruleName);
+       // Stop if the rule is found = continue while it is null.
+       return rule == null;
+diff --git a/src/main/java/com/google/devtools/build/lib/rules/repository/RepositoryDelegatorFunction.java b/src/main/java/com/google/devtools/build/lib/rules/repository/RepositoryDelegatorFunction.java
+old mode 100644
+new mode 100755
+index 9200ec0..37d536e
+--- a/src/main/java/com/google/devtools/build/lib/rules/repository/RepositoryDelegatorFunction.java
++++ b/src/main/java/com/google/devtools/build/lib/rules/repository/RepositoryDelegatorFunction.java
+@@ -129,7 +129,10 @@ public final class RepositoryDelegatorFunction implements SkyFunction {
+   public SkyValue compute(SkyKey skyKey, Environment env)
+       throws InterruptedException, RepositoryFunctionException {
+     RepositoryName repositoryName = (RepositoryName) skyKey.argument();
++    System.err.println("[Z/OS-DEBUG] RepositoryDelegatorFunction.compute() called for: " + repositoryName.getCanonicalForm());
++    
+     if (!repositoryName.isVisible()) {
++      System.err.println("[Z/OS-DEBUG] Repository not visible");
+       return new NoRepositoryDirectoryValue(
+           String.format(
+               "No repository visible as '@%s' from %s",
+@@ -312,27 +315,44 @@ public final class RepositoryDelegatorFunction implements SkyFunction {
+   private Rule getRepositoryRule(
+       Environment env, RepositoryName repositoryName, StarlarkSemantics starlarkSemantics)
+       throws InterruptedException, RepositoryFunctionException {
++    // Z/OS DEBUG: Log repository resolution attempts
++    System.err.println("[Z/OS-DEBUG] getRepositoryRule called for: " + repositoryName.getCanonicalForm());
++    System.err.println("[Z/OS-DEBUG] ENABLE_BZLMOD: " + starlarkSemantics.getBool(BuildLanguageOptions.ENABLE_BZLMOD));
++    System.err.println("[Z/OS-DEBUG] ENABLE_WORKSPACE: " + starlarkSemantics.getBool(BuildLanguageOptions.ENABLE_WORKSPACE));
++    
+     if (starlarkSemantics.getBool(BuildLanguageOptions.ENABLE_BZLMOD)) {
+       // Tries to get a repository rule instance from Bzlmod generated repos.
+       SkyKey key = BzlmodRepoRuleValue.key(repositoryName);
+       BzlmodRepoRuleValue value = (BzlmodRepoRuleValue) env.getValue(key);
+       if (env.valuesMissing()) {
++        System.err.println("[Z/OS-DEBUG] Bzlmod lookup - values missing");
+         return null;
+       }
+       if (value != BzlmodRepoRuleValue.REPO_RULE_NOT_FOUND_VALUE) {
++        System.err.println("[Z/OS-DEBUG] Found in Bzlmod");
+         return value.getRule();
+       }
++      System.err.println("[Z/OS-DEBUG] Not found in Bzlmod, trying WORKSPACE");
+     }
+ 
+     if (starlarkSemantics.getBool(BuildLanguageOptions.ENABLE_WORKSPACE)) {
+       // fallback to look up the repository in the WORKSPACE file.
++      System.err.println("[Z/OS-DEBUG] Trying WORKSPACE lookup for: " + repositoryName.getName());
+       try {
+-        return getRepoRuleFromWorkspace(repositoryName, env);
++        Rule rule = getRepoRuleFromWorkspace(repositoryName, env);
++        if (rule != null) {
++          System.err.println("[Z/OS-DEBUG] Found in WORKSPACE: " + rule.getName());
++        } else {
++          System.err.println("[Z/OS-DEBUG] WORKSPACE lookup returned null");
++        }
++        return rule;
+       } catch (NoSuchRepositoryException e) {
++        System.err.println("[Z/OS-DEBUG] NoSuchRepositoryException from WORKSPACE");
+         return null;
+       }
+     }
+ 
++    System.err.println("[Z/OS-DEBUG] Both BZLMOD and WORKSPACE disabled! Returning null.");
+     return null;
+   }
+ 
+diff --git a/src/main/java/com/google/devtools/build/lib/runtime/BlazeRuntime.java b/src/main/java/com/google/devtools/build/lib/runtime/BlazeRuntime.java
+old mode 100644
+new mode 100755
+index 2e00120..6f10a7a
+--- a/src/main/java/com/google/devtools/build/lib/runtime/BlazeRuntime.java
++++ b/src/main/java/com/google/devtools/build/lib/runtime/BlazeRuntime.java
+@@ -755,22 +755,58 @@ public final class BlazeRuntime implements BugReport.BlazeRuntimeInterface {
+    * Do not add this to a unittest.
+    */
+   public static void main(Iterable<Class<? extends BlazeModule>> moduleClasses, String[] args) {
+-    setupUncaughtHandlerAtStartup(args);
+-    List<BlazeModule> modules = createModules(moduleClasses);
+-    // blaze.cc will put --batch first if the user set it.
+-    if (args.length >= 1 && args[0].equals("--batch")) {
+-      // Run Blaze in batch mode.
+-      System.exit(batchMain(modules, args));
+-    }
+-    logger.atInfo().log(
+-        "Starting Bazel server with %s, args %s", maybeGetPidString(), Arrays.toString(args));
++    // z/OS DEBUG: Entry point
++    System.err.println("[Z/OS-DEBUG] BlazeRuntime.main() ENTRY");
++    System.err.println("[Z/OS-DEBUG]   args.length = " + args.length);
++    if (args.length > 0) {
++      System.err.println("[Z/OS-DEBUG]   args[0] = " + args[0]);
++    }
++    System.err.flush();
++    
+     try {
+-      // Run Blaze in server mode.
+-      System.exit(serverMain(modules, OutErr.SYSTEM_OUT_ERR, args));
+-    } catch (RuntimeException | Error e) { // A definite bug...
+-      Crash crash = Crash.from(e);
+-      BugReport.handleCrash(crash, CrashContext.keepAlive().withArgs(args));
+-      System.exit(crash.getDetailedExitCode().getExitCode().getNumericExitCode());
++      System.err.println("[Z/OS-DEBUG] Calling setupUncaughtHandlerAtStartup()");
++      System.err.flush();
++      setupUncaughtHandlerAtStartup(args);
++      
++      System.err.println("[Z/OS-DEBUG] Calling createModules()");
++      System.err.flush();
++      List<BlazeModule> modules = createModules(moduleClasses);
++      System.err.println("[Z/OS-DEBUG] Created " + modules.size() + " modules");
++      System.err.flush();
++      
++      // blaze.cc will put --batch first if the user set it.
++      if (args.length >= 1 && args[0].equals("--batch")) {
++        // Run Blaze in batch mode.
++        System.err.println("[Z/OS-DEBUG] Running in BATCH mode");
++        System.err.flush();
++        System.exit(batchMain(modules, args));
++      }
++      
++      System.err.println("[Z/OS-DEBUG] Running in SERVER mode");
++      System.err.flush();
++      logger.atInfo().log(
++          "Starting Bazel server with %s, args %s", maybeGetPidString(), Arrays.toString(args));
++      try {
++        // Run Blaze in server mode.
++        System.exit(serverMain(modules, OutErr.SYSTEM_OUT_ERR, args));
++      } catch (RuntimeException | Error e) { // A definite bug...
++        System.err.println("[Z/OS-DEBUG] CAUGHT Exception in serverMain:");
++        System.err.println("[Z/OS-DEBUG]   Type: " + e.getClass().getName());
++        System.err.println("[Z/OS-DEBUG]   Message: " + e.getMessage());
++        e.printStackTrace(System.err);
++        System.err.flush();
++        Crash crash = Crash.from(e);
++        BugReport.handleCrash(crash, CrashContext.keepAlive().withArgs(args));
++        System.exit(crash.getDetailedExitCode().getExitCode().getNumericExitCode());
++      }
++    } catch (Throwable t) {
++      System.err.println("[Z/OS-DEBUG] FATAL: Uncaught exception in BlazeRuntime.main():");
++      System.err.println("[Z/OS-DEBUG]   Type: " + t.getClass().getName());
++      System.err.println("[Z/OS-DEBUG]   Message: " + t.getMessage());
++      System.err.println("[Z/OS-DEBUG]   Stack trace:");
++      t.printStackTrace(System.err);
++      System.err.flush();
++      throw t;
+     }
+   }
+ 
+@@ -914,8 +950,20 @@ public final class BlazeRuntime implements BugReport.BlazeRuntimeInterface {
+    * exit status of the program.
+    */
+   private static int batchMain(Iterable<BlazeModule> modules, String[] args) {
++    System.err.println("[Z/OS-DEBUG] batchMain() ENTRY");
++    System.err.flush();
++    
++    System.err.println("[Z/OS-DEBUG] Capturing SIGINT handler");
++    System.err.flush();
+     InterruptSignalHandler signalHandler = captureSigint(getSlowInterruptMessageSuffix(modules));
++    
++    System.err.println("[Z/OS-DEBUG] Splitting startup options");
++    System.err.flush();
+     CommandLineOptions commandLineOptions = splitStartupOptions(modules, args);
++    System.err.println("[Z/OS-DEBUG] Startup args: " + commandLineOptions.getStartupArgs().size());
++    System.err.println("[Z/OS-DEBUG] Other args: " + commandLineOptions.getOtherArgs().size());
++    System.err.flush();
++    
+     logger.atInfo().log(
+         "Running Bazel in batch mode with %s, startup args %s",
+         maybeGetPidString(), commandLineOptions.getStartupArgs());
+@@ -923,15 +971,30 @@ public final class BlazeRuntime implements BugReport.BlazeRuntimeInterface {
+     BlazeRuntime runtime;
+     InvocationPolicy policy;
+     try {
++      System.err.println("[Z/OS-DEBUG] Creating new runtime");
++      System.err.flush();
+       runtime = newRuntime(modules, commandLineOptions.getStartupArgs(), null);
++      System.err.println("[Z/OS-DEBUG] Runtime created successfully");
++      System.err.flush();
++      
++      System.err.println("[Z/OS-DEBUG] Parsing invocation policy");
++      System.err.flush();
+       policy =
+           InvocationPolicyParser.parsePolicy(
+               runtime.startupOptionsProvider.getOptions(BlazeServerStartupOptions.class)
+                   .invocationPolicy);
++      System.err.println("[Z/OS-DEBUG] Policy parsed successfully");
++      System.err.flush();
+     } catch (OptionsParsingException e) {
++      System.err.println("[Z/OS-DEBUG] OptionsParsingException: " + e.getMessage());
++      e.printStackTrace(System.err);
++      System.err.flush();
+       OutErr.SYSTEM_OUT_ERR.printErrLn(e.getMessage());
+       return ExitCode.COMMAND_LINE_ERROR.getNumericExitCode();
+     } catch (AbruptExitException e) {
++      System.err.println("[Z/OS-DEBUG] AbruptExitException: " + e.getMessage());
++      e.printStackTrace(System.err);
++      System.err.flush();
+       OutErr.SYSTEM_OUT_ERR.printErrLn(e.getMessage());
+       return e.getExitCode().getNumericExitCode();
+     }
+@@ -942,13 +1005,23 @@ public final class BlazeRuntime implements BugReport.BlazeRuntimeInterface {
+       startupOptionsFromCommandLine.add(new Pair<>("", option));
+     }
+ 
++    System.err.println("[Z/OS-DEBUG] Creating BlazeCommandDispatcher");
++    System.err.flush();
+     BlazeCommandDispatcher dispatcher =
+         new BlazeCommandDispatcher(runtime, BlazeCommandDispatcher.UNKNOWN_SERVER_PID);
++    System.err.println("[Z/OS-DEBUG] Dispatcher created");
++    System.err.flush();
++    
+     boolean shutdownDone = false;
+ 
+     try {
+       logger.atInfo().log(
+           "%s", SafeRequestLogging.getRequestLogString(commandLineOptions.getOtherArgs()));
++      
++      System.err.println("[Z/OS-DEBUG] Calling dispatcher.exec() with command: " + 
++          (commandLineOptions.getOtherArgs().isEmpty() ? "<empty>" : commandLineOptions.getOtherArgs().get(0)));
++      System.err.flush();
++      
+       BlazeCommandResult result =
+           dispatcher.exec(
+               policy,
+@@ -959,6 +1032,16 @@ public final class BlazeRuntime implements BugReport.BlazeRuntimeInterface {
+               runtime.clock.currentTimeMillis(),
+               Optional.of(startupOptionsFromCommandLine.build()),
+               /*commandExtensions=*/ ImmutableList.of());
++      
++      System.err.println("[Z/OS-DEBUG] dispatcher.exec() returned");
++      System.err.println("[Z/OS-DEBUG] Exit code: " + result.getExitCode());
++      System.err.println("[Z/OS-DEBUG] Result toString: " + result.toString());
++      System.err.println("[Z/OS-DEBUG] Has failure detail? " + (result.getFailureDetail() != null));
++      if (result.getFailureDetail() != null) {
++        System.err.println("[Z/OS-DEBUG] Failure detail message: " + result.getFailureDetail().getMessage());
++      }
++      System.err.flush();
++      
+       if (result.getExecRequest() == null) {
+         // Simple case: we are given an exit code
+         return result.getExitCode().getNumericExitCode();
+@@ -1003,7 +1086,17 @@ public final class BlazeRuntime implements BugReport.BlazeRuntimeInterface {
+       }
+     } catch (InterruptedException e) {
+       // This is almost main(), so it's okay to just swallow it. We are exiting soon.
++      System.err.println("[Z/OS-DEBUG] InterruptedException in batchMain");
++      e.printStackTrace(System.err);
++      System.err.flush();
+       return ExitCode.INTERRUPTED.getNumericExitCode();
++    } catch (Throwable t) {
++      System.err.println("[Z/OS-DEBUG] FATAL: Uncaught exception in batchMain:");
++      System.err.println("[Z/OS-DEBUG]   Type: " + t.getClass().getName());
++      System.err.println("[Z/OS-DEBUG]   Message: " + t.getMessage());
++      t.printStackTrace(System.err);
++      System.err.flush();
++      throw t;
+     } finally {
+       if (!shutdownDone) {
+         runtime.shutdown();
+@@ -1067,6 +1160,9 @@ public final class BlazeRuntime implements BugReport.BlazeRuntimeInterface {
+       dispatcher.shutdown();
+       return ExitCode.SUCCESS.getNumericExitCode();
+     } catch (OptionsParsingException e) {
++      System.err.println("[Z/OS-DEBUG] OptionsParsingException in batchMain: " + e.getMessage());
++      e.printStackTrace(System.err);
++      System.err.flush();
+       outErr.printErrLn(e.getMessage());
+       return ExitCode.COMMAND_LINE_ERROR.getNumericExitCode();
+     } catch (AbruptExitException e) {
+diff --git a/src/main/java/com/google/devtools/build/lib/skyframe/ExternalPackageFunction.java b/src/main/java/com/google/devtools/build/lib/skyframe/ExternalPackageFunction.java
+old mode 100644
+new mode 100755
+index d6bfbd4..f1a228e
+--- a/src/main/java/com/google/devtools/build/lib/skyframe/ExternalPackageFunction.java
++++ b/src/main/java/com/google/devtools/build/lib/skyframe/ExternalPackageFunction.java
+@@ -20,6 +20,7 @@ import com.google.devtools.build.lib.skyframe.serialization.VisibleForSerializat
+ import com.google.devtools.build.lib.skyframe.serialization.autocodec.SerializationConstant;
+ import com.google.devtools.build.lib.vfs.RootedPath;
+ import com.google.devtools.build.skyframe.SkyFunction;
++import com.google.devtools.build.skyframe.SkyFunctionName;
+ import com.google.devtools.build.skyframe.SkyKey;
+ import com.google.devtools.build.skyframe.SkyValue;
+ import javax.annotation.Nullable;
+@@ -32,7 +33,15 @@ import javax.annotation.Nullable;
+  */
+ public class ExternalPackageFunction implements SkyFunction {
+   @SerializationConstant @VisibleForSerialization
+-  static final SkyKey KEY = () -> SkyFunctions.EXTERNAL_PACKAGE;
++  static final SkyKey KEY = new SkyKey() {
++    @Override
++    public SkyFunctionName functionName() {
++      return SkyFunctions.EXTERNAL_PACKAGE;
++    }
++  };
++  // Z/OS BOOTSTRAP PATCH: Removed supportsPartialReevaluation() override
++  // It was preventing compute() from being called!
++  // END Z/OS BOOTSTRAP PATCH
+ 
+   private final ExternalPackageHelper externalPackageHelper;
+ 
+@@ -43,6 +52,14 @@ public class ExternalPackageFunction implements SkyFunction {
+   @Nullable
+   @Override
+   public SkyValue compute(SkyKey skyKey, Environment env) throws InterruptedException {
++    // Z/OS BOOTSTRAP PATCH: In bootstrap mode, still process WORKSPACE
++    System.err.println("[Z/OS-DEBUG] ExternalPackageFunction.compute() called");
++    String zosBootstrapMode = System.getProperty("ZOS_BOOTSTRAP_MODE");
++    System.err.println("[Z/OS-DEBUG] ZOS_BOOTSTRAP_MODE=" + zosBootstrapMode);
++    // The ExternalPackageHelper will skip error checking, but we need the WORKSPACE
++    // rules (like local_repository) to be available!
++    // END Z/OS BOOTSTRAP PATCH
++
+     RootedPath workspacePath = externalPackageHelper.findWorkspaceFile(env);
+     if (env.valuesMissing()) {
+       return null;
+diff --git a/src/main/java/com/google/devtools/build/lib/skyframe/PackageFunction.java b/src/main/java/com/google/devtools/build/lib/skyframe/PackageFunction.java
+old mode 100644
+new mode 100755
+index 0ae6280..acbf662
+--- a/src/main/java/com/google/devtools/build/lib/skyframe/PackageFunction.java
++++ b/src/main/java/com/google/devtools/build/lib/skyframe/PackageFunction.java
+@@ -575,6 +575,22 @@ public class PackageFunction implements SkyFunction {
+       return null;
+     }
+ 
++    // Z/OS BOOTSTRAP PATCH: Set loads for packages in bootstrap mode
++    // Without this, Package.finishInit() throws "Loads not set for error-free package"
++    String zosBootstrapMode = System.getProperty("ZOS_BOOTSTRAP_MODE");
++    if ("true".equals(zosBootstrapMode)) {
++      // Must call setLoads() before finishBuild()
++      pkgBuilder.setLoads(com.google.common.collect.ImmutableList.of());
++      try {
++        java.nio.file.Files.write(
++            java.nio.file.Paths.get("/tmp/zos_workspace_debug.log"),
++            ("PackageFunction: setLoads() called for package " + packageId + "\n").getBytes(),
++            java.nio.file.StandardOpenOption.CREATE,
++            java.nio.file.StandardOpenOption.APPEND);
++      } catch (Exception ignored) {}
++    }
++    // END Z/OS BOOTSTRAP PATCH
++
+     Package pkg = pkgBuilder.finishBuild();
+ 
+     Event.replayEventsOn(env.getListener(), pkgBuilder.getEvents());
+@@ -666,6 +682,22 @@ public class PackageFunction implements SkyFunction {
+       @Nullable BzlLoadFunction bzlLoadFunctionForInlining,
+       boolean checkVisibility)
+       throws NoSuchPackageException, InterruptedException {
++    // Z/OS BOOTSTRAP PATCH: Try to load .bzl files, but don't fail if missing
++    // This allows internal .bzl files to work, while gracefully handling missing external repos
++    String zosBootstrapMode = System.getProperty("ZOS_BOOTSTRAP_MODE");
++    boolean isBootstrap = "true".equals(zosBootstrapMode);
++    
++    if (isBootstrap) {
++      try {
++        java.nio.file.Files.write(
++            java.nio.file.Paths.get("/tmp/zos_workspace_debug.log"),
++            ("loadBzlModules: TRYING to load " + keys.size() + " modules for " + packageId + "\n").getBytes(),
++            java.nio.file.StandardOpenOption.CREATE,
++            java.nio.file.StandardOpenOption.APPEND);
++      } catch (Exception ignored) {}
++    }
++    // END Z/OS BOOTSTRAP PATCH - Now continue with normal loading
++    
+     List<BzlLoadValue> bzlLoads;
+     try {
+       bzlLoads =
+@@ -689,6 +721,23 @@ public class PackageFunction implements SkyFunction {
+             env.getListener());
+       }
+     } catch (BzlLoadFailedException e) {
++      // Z/OS BOOTSTRAP PATCH: In bootstrap mode, allow missing .bzl files
++      if (isBootstrap) {
++        // Log the missing file but continue with empty modules
++        try {
++          java.nio.file.Files.write(
++              java.nio.file.Paths.get("/tmp/zos_workspace_debug.log"),
++              ("loadBzlModules: Failed to load .bzl file (continuing): " + e.getMessage() + "\n").getBytes(),
++              java.nio.file.StandardOpenOption.CREATE,
++              java.nio.file.StandardOpenOption.APPEND);
++        } catch (Exception ignored) {}
++        // Return empty map - the BUILD file will fail when it tries to use undefined symbols
++        // but that's better than failing here
++        return ImmutableMap.of();
++      }
++      // END Z/OS BOOTSTRAP PATCH
++      
++      // Normal mode: throw the exception
+       Throwable rootCause = Throwables.getRootCause(e);
+       throw PackageFunctionException.builder()
+           .setType(PackageFunctionException.Type.BUILD_FILE_CONTAINS_ERRORS)
+diff --git a/src/main/java/com/google/devtools/build/lib/skyframe/RepositoryMappingFunction.java b/src/main/java/com/google/devtools/build/lib/skyframe/RepositoryMappingFunction.java
+old mode 100644
+new mode 100755
+index d01fd4d..7a88e4b
+--- a/src/main/java/com/google/devtools/build/lib/skyframe/RepositoryMappingFunction.java
++++ b/src/main/java/com/google/devtools/build/lib/skyframe/RepositoryMappingFunction.java
+@@ -51,6 +51,15 @@ public class RepositoryMappingFunction implements SkyFunction {
+   @Override
+   public SkyValue compute(SkyKey skyKey, Environment env)
+       throws SkyFunctionException, InterruptedException {
++    // Z/OS BOOTSTRAP PATCH: Return empty repository mapping in bootstrap mode
++    String zosMode = System.getProperty("ZOS_BOOTSTRAP_MODE");
++    if ("true".equals(zosMode)) {
++      System.err.println("[Z/OS Bootstrap Mode] RepositoryMappingFunction - returning empty mapping");
++      // Return an empty mapping - no external repositories in bootstrap mode
++      return RepositoryMappingValue.createForWorkspaceRepo(RepositoryMapping.ALWAYS_FALLBACK);
++    }
++    // END Z/OS BOOTSTRAP PATCH
++    
+     StarlarkSemantics starlarkSemantics = PrecomputedValue.STARLARK_SEMANTICS.get(env);
+     if (starlarkSemantics == null) {
+       return null;
+diff --git a/src/main/java/com/google/devtools/build/lib/skyframe/WorkspaceFileFunction.java b/src/main/java/com/google/devtools/build/lib/skyframe/WorkspaceFileFunction.java
+index 6d61865..2bb51c7 100644
+--- a/src/main/java/com/google/devtools/build/lib/skyframe/WorkspaceFileFunction.java
++++ b/src/main/java/com/google/devtools/build/lib/skyframe/WorkspaceFileFunction.java
+@@ -100,6 +100,9 @@ public class WorkspaceFileFunction implements SkyFunction {
+   @Nullable
+   public SkyValue compute(SkyKey skyKey, Environment env)
+       throws WorkspaceFileFunctionException, InterruptedException {
++    System.err.println("[DEBUG] WorkspaceFileFunction.compute() ENTRY");
++    String zosMode = System.getProperty("ZOS_BOOTSTRAP_MODE", System.getenv("ZOS_BOOTSTRAP_MODE"));
++    System.err.println("[DEBUG] At entry: ZOS_BOOTSTRAP_MODE = " + zosMode);
+     WorkspaceFileKey key = (WorkspaceFileKey) skyKey.argument();
+     RootedPath workspaceFile = key.getPath();
+     StarlarkSemantics starlarkSemantics = PrecomputedValue.STARLARK_SEMANTICS.get(env);
+@@ -339,6 +342,29 @@ public class WorkspaceFileFunction implements SkyFunction {
+               workspaceFile));
+     }
+ 
++
++    // Z/OS BOOTSTRAP PATCH: Skip .bzl loading if ZOS_BOOTSTRAP_MODE is set
++    // This avoids circular dependency in bootstrap Bazel
++    String zosBootstrapMode = System.getProperty("ZOS_BOOTSTRAP_MODE", System.getenv("ZOS_BOOTSTRAP_MODE"));
++    System.err.println("[Z/OS Bootstrap] WorkspaceFileFunction chunk " + key.getIndex() + ", ZOS_BOOTSTRAP_MODE=" + zosBootstrapMode);
++    if ("true".equals(zosBootstrapMode)) {
++      // Return empty modules - use native rules instead
++      System.err.println("[Z/OS Bootstrap] Skipping .bzl module loading for chunk " + key.getIndex());
++      // CRITICAL: Must call setLoads() before building package!
++      // Without this, Package.java throws "Loads not set for error-free package"
++      builder.setLoads(ImmutableList.of());
++      System.err.println("[Z/OS Bootstrap] Called builder.setLoads() for chunk " + key.getIndex());
++      return new WorkspaceFileValue(
++          buildAndReportEvents(builder, env),
++          /* loadedModules= */ ImmutableMap.of(),
++          /* loadToChunkMap= */ ImmutableMap.of(),
++          /* bindings= */ ImmutableMap.of(),
++          workspaceFile,
++          key.getIndex(),
++          /* hasNext= */ key.getIndex() < chunks.size() - 1);
++    }
++    // END Z/OS BOOTSTRAP PATCH
++
+     // Load .bzl modules in parallel.
+     ImmutableMap<String, Module> loadedModules;
+     try {
+@@ -443,10 +469,27 @@ public class WorkspaceFileFunction implements SkyFunction {
+ 
+   private static Package buildAndReportEvents(Package.Builder pkgBuilder, Environment env)
+       throws WorkspaceFileFunctionException {
++    // Z/OS Bootstrap Debug: Log before building
++    try {
++      java.nio.file.Files.write(
++          java.nio.file.Paths.get("/tmp/zos_workspace_debug.log"),
++          ("Building package, containsErrors=" + pkgBuilder.containsErrors() + "\n").getBytes(),
++          java.nio.file.StandardOpenOption.CREATE,
++          java.nio.file.StandardOpenOption.APPEND);
++    } catch (Exception ignored) {}
++    
+     Package result;
+     try {
+       result = pkgBuilder.build();
+     } catch (NoSuchPackageException e) {
++      // Z/OS Bootstrap Debug: Log error
++      try {
++        java.nio.file.Files.write(
++            java.nio.file.Paths.get("/tmp/zos_workspace_debug.log"),
++            ("Error building package: " + e.getMessage() + "\n").getBytes(),
++            java.nio.file.StandardOpenOption.CREATE,
++            java.nio.file.StandardOpenOption.APPEND);
++      } catch (Exception ignored) {}
+       throw new WorkspaceFileFunctionException(e, Transience.TRANSIENT);
+     }
+ 
+diff --git a/src/main/java/com/google/devtools/build/skyframe/BUILD b/src/main/java/com/google/devtools/build/skyframe/BUILD
+old mode 100644
+new mode 100755
+index 7b07ff1..32dbf9e
+--- a/src/main/java/com/google/devtools/build/skyframe/BUILD
++++ b/src/main/java/com/google/devtools/build/skyframe/BUILD
+@@ -109,14 +109,14 @@ proto_library(
+     srcs = ["graph_inconsistency.proto"],
+ )
+ 
+-java_proto_library(
++alias(
+     name = "graph_inconsistency_java_proto",
+-    deps = [":graph_inconsistency"],
++    actual = "//src/main/protobuf:all_java_protos",
+ )
+ 
+-java_library_srcs(
++filegroup(
+     name = "dist_jars",
+-    deps = [":graph_inconsistency_java_proto"],
++    srcs = ["//:pre_generated_protos"],
+ )
+ 
+ filegroup(

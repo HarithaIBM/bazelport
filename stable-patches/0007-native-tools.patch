@@ -1,0 +1,192 @@
+diff --git a/src/main/tools/BUILD b/src/main/tools/BUILD
+old mode 100644
+new mode 100755
+index 058a6c5..35b2af6
+--- a/src/main/tools/BUILD
++++ b/src/main/tools/BUILD
+@@ -41,6 +41,7 @@ cc_binary(
+     linkopts = select({
+         "//src/conditions:darwin": ["-lm"],
+         "//src/conditions:openbsd": [],
++        "//src/conditions:zos": [],
+         "//src/conditions:windows": [],
+         "//conditions:default": [
+             "-lm",
+@@ -74,6 +75,7 @@ cc_binary(
+         "//src/conditions:darwin": ["dummy-sandbox.c"],
+         "//src/conditions:freebsd": ["dummy-sandbox.c"],
+         "//src/conditions:openbsd": ["dummy-sandbox.c"],
++        "//src/conditions:zos": ["dummy-sandbox.c"],
+         "//src/conditions:windows": ["dummy-sandbox.c"],
+         "//conditions:default": [
+             "linux-sandbox.cc",
+@@ -88,6 +90,7 @@ cc_binary(
+         "//src/conditions:darwin": [],
+         "//src/conditions:freebsd": [],
+         "//src/conditions:openbsd": [],
++        "//src/conditions:zos": [],
+         "//src/conditions:windows": [],
+         "//conditions:default": [
+             "-lm",
+@@ -98,6 +101,7 @@ cc_binary(
+         "//src/conditions:darwin": [],
+         "//src/conditions:freebsd": [],
+         "//src/conditions:openbsd": [],
++        "//src/conditions:zos": [],
+         "//src/conditions:windows": [],
+         "//conditions:default": [
+             ":logging",
+diff --git a/src/main/tools/daemonize.c b/src/main/tools/daemonize.c
+old mode 100644
+new mode 100755
+index 1188b67..e7e8f24
+--- a/src/main/tools/daemonize.c
++++ b/src/main/tools/daemonize.c
+@@ -38,7 +38,17 @@
+ #include <sys/types.h>
+ 
+ #include <assert.h>
++#ifdef __MVS__
++// z/OS USS does not provide err.h; minimal equivalents of err(3)/errx(3).
++#include <stdio.h>
++#include <string.h>
++#define err(exit_value, fmt, ...) \
++  { fprintf(stderr, "ERROR: " fmt ": %s\n", ##__VA_ARGS__, strerror(errno)); exit(exit_value); }
++#define errx(exit_value, fmt, ...) \
++  { fprintf(stderr, "ERROR: " fmt "\n", ##__VA_ARGS__); exit(exit_value); }
++#else
+ #include <err.h>
++#endif
+ #include <errno.h>
+ #include <fcntl.h>
+ #include <getopt.h>
+diff --git a/src/main/tools/process-tools.cc b/src/main/tools/process-tools.cc
+old mode 100644
+new mode 100755
+index dae919d..e6da1d0
+--- a/src/main/tools/process-tools.cc
++++ b/src/main/tools/process-tools.cc
+@@ -14,6 +14,39 @@
+ 
+ #include "src/main/tools/process-tools.h"
+ 
++#ifdef __MVS__
++// z/OS USS lacks NSIG, wait4 and several struct rusage members.
++#include <sys/resource.h>
++#include <sys/wait.h>
++#ifndef NSIG
++#define NSIG 64
++#endif
++#define wait4(pid, status, options, rusage) \
++  zos_wait4(pid, status, options, rusage)
++static inline pid_t zos_wait4(pid_t pid, int* status, int options,
++                              struct rusage* ru) {
++  pid_t r = waitpid(pid, status, options);
++  if (r >= 0 && ru != nullptr) {
++    getrusage(RUSAGE_CHILDREN, ru);
++  }
++  return r;
++}
++#define ru_maxrss ru_utime.tv_sec  /* unused on z/OS; remapped to dummy */
++#define ru_ixrss ru_utime.tv_sec
++#define ru_idrss ru_utime.tv_sec
++#define ru_isrss ru_utime.tv_sec
++#define ru_nswap ru_utime.tv_sec
++#define ru_minflt ru_utime.tv_sec
++#define ru_majflt ru_utime.tv_sec
++#define ru_inblock ru_utime.tv_sec
++#define ru_oublock ru_utime.tv_sec
++#define ru_msgsnd ru_utime.tv_sec
++#define ru_msgrcv ru_utime.tv_sec
++#define ru_nsignals ru_utime.tv_sec
++#define ru_nvcsw ru_utime.tv_sec
++#define ru_nivcsw ru_utime.tv_sec
++#endif
++
+ #include <errno.h>
+ #include <fcntl.h>
+ #include <math.h>
+diff --git a/src/main/tools/process-wrapper-options.cc b/src/main/tools/process-wrapper-options.cc
+old mode 100644
+new mode 100755
+index 305ad0e..b8f4de5
+--- a/src/main/tools/process-wrapper-options.cc
++++ b/src/main/tools/process-wrapper-options.cc
+@@ -14,7 +14,23 @@
+ 
+ #include "src/main/tools/process-wrapper-options.h"
+ 
++#ifdef __MVS__
++// z/OS <getopt.h> is EBCDIC-tagged with trigraph directives that clang cannot
++// process; getopt_long itself exists in the libc. Declare it directly.
++#define no_argument 0
++#define required_argument 1
++#define optional_argument 2
++struct option {
++  const char* name;
++  int has_arg;
++  int* flag;
++  int val;
++};
++extern "C" int getopt_long(int argc, char* const argv[], const char* optstring,
++                           const struct option* longopts, int* longindex);
++#else
+ #include <getopt.h>
++#endif
+ #include <stdarg.h>
+ #include <stdio.h>
+ #include <stdlib.h>
+diff --git a/src/main/tools/process-wrapper.cc b/src/main/tools/process-wrapper.cc
+old mode 100644
+new mode 100755
+index 25765db..96076ff
+--- a/src/main/tools/process-wrapper.cc
++++ b/src/main/tools/process-wrapper.cc
+@@ -24,7 +24,10 @@
+ 
+ #include "src/main/tools/process-wrapper.h"
+ 
++#ifndef __MVS__
++// z/OS USS does not provide err.h; none of the err(3) family is used below.
+ #include <err.h>
++#endif
+ #include <errno.h>
+ #include <signal.h>
+ #include <stdbool.h>
+diff --git a/src/package-bazel.sh b/src/package-bazel.sh
+old mode 100644
+new mode 100755
+index 5b1441f..1d5c47c
+--- a/src/package-bazel.sh
++++ b/src/package-bazel.sh
+@@ -52,7 +52,7 @@ if [[ $DEV_BUILD -eq 0 ]]; then
+   cd $RECOMP
+ 
+   # Zero out timestamps and sort the entries to ensure determinism.
+-  find . -type f -print0 | xargs -0 touch -t 198001010000.00
++  find . -type f | while IFS= read -r zt; do touch -t 198001010000.00 "$zt"; done
+   find . -type f | sort | zip -q0DX@ "$DEPLOY_UNCOMP"
+ 
+   # While we're in the deploy jar, grab the label and pack it into the final
+@@ -107,7 +107,7 @@ cp $DEPLOY_JAR $PACKAGE_DIR/A-server.jar
+ cp $INSTALL_BASE_KEY $PACKAGE_DIR/install_base_key
+ 
+ # Zero timestamps.
+-(cd $PACKAGE_DIR; xargs touch -t 198001010000.00) < $FILE_LIST
++(cd $PACKAGE_DIR; while IFS= read -r zt; do touch -t 198001010000.00 "$zt"; done) < $FILE_LIST
+ 
+ if [[ "$DEV_BUILD" -eq 1 ]]; then
+   # Create output zip with lowest compression, but fast.
+diff --git a/src/zip_builtins.sh b/src/zip_builtins.sh
+old mode 100644
+new mode 100755
+index d78ca55..5a1fb2b
+--- a/src/zip_builtins.sh
++++ b/src/zip_builtins.sh
+@@ -57,5 +57,5 @@ mv "staging/$builtins_root" builtins_bzl
+ # are relative to tmpdir.
+ #
+ # For determinism, sort the files and zero out their timestamps before zipping.
+-find builtins_bzl -type f -print0 | xargs -0 touch -t 198001010000.00
++find builtins_bzl -type f | while IFS= read -r zt; do touch -t 198001010000.00 "$zt"; done
+ find builtins_bzl -type f | sort | "$zip" -qDX0r@ "$output" builtins_bzl

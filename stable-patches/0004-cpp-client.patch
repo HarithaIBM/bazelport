@@ -1,0 +1,392 @@
+diff --git a/src/main/cpp/BUILD b/src/main/cpp/BUILD
+old mode 100644
+new mode 100755
+index 3a5c0ba..d8fb3b2
+--- a/src/main/cpp/BUILD
++++ b/src/main/cpp/BUILD
+@@ -30,6 +30,10 @@ cc_library(
+             "blaze_util_bsd.cc",
+             "blaze_util_posix.cc",
+         ],
++        "//src/conditions:zos": [
++            "blaze_util_zos.cc",
++            "blaze_util_posix.cc",
++        ],
+         "//src/conditions:windows": [
+             "blaze_util_windows.cc",
+         ],
+diff --git a/src/main/cpp/blaze.cc b/src/main/cpp/blaze.cc
+old mode 100644
+new mode 100755
+index 128104d..33dd1db
+--- a/src/main/cpp/blaze.cc
++++ b/src/main/cpp/blaze.cc
+@@ -1243,6 +1243,11 @@ static map<string, EnvVarValue> PrepareEnvironmentForJvm() {
+   const char *want_locale = "en_US.ISO-8859-1";
+   bool override_locale = true;
+ #ifndef _WIN32
++#ifdef __MVS__
++  // z/OS does not provide locale_t/newlocale; always override to ISO-8859-1
++  // (the z/OS port always runs with ISO8859-1 encoding anyway).
++  override_locale = true;  // no locale_t check needed
++#else
+   locale_t iso_locale = newlocale(LC_CTYPE_MASK, want_locale, (locale_t)0);
+   if (iso_locale == 0) {
+     // ISO-8859-1 locale not available, use whatever the user has defined.
+@@ -1250,6 +1255,7 @@ static map<string, EnvVarValue> PrepareEnvironmentForJvm() {
+   } else {
+     freelocale(iso_locale);
+   }
++#endif
+ #endif
+ 
+   if (override_locale) {
+@@ -1536,7 +1542,10 @@ int Main(int argc, const char *const *argv, WorkspaceLayout *workspace_layout,
+   return 0;
+ }
+ 
++#ifndef __MVS__
++// z/OS: gRPC 1.73 (zopen) removed gpr_set_log_function and gpr_log_func_args.
+ static void null_grpc_log_function(gpr_log_func_args *args) {}
++#endif
+ 
+ // There might be a mismatch between std::string and the string type returned
+ // from protos. This function is the safe way to compare such strings.
+@@ -1560,7 +1569,9 @@ BlazeServer::BlazeServer(const StartupOptions &startup_options)
+       preemptible_(startup_options.preemptible),
+       output_base_(startup_options.output_base) {
+   if (!startup_options.client_debug) {
++#ifndef __MVS__
+     gpr_set_log_function(null_grpc_log_function);
++#endif
+   }
+ 
+   pipe_.reset(blaze_util::CreatePipe());
+diff --git a/src/main/cpp/blaze_util_linux.cc b/src/main/cpp/blaze_util_linux.cc
+old mode 100644
+new mode 100755
+index e202a74..c842c5c
+--- a/src/main/cpp/blaze_util_linux.cc
++++ b/src/main/cpp/blaze_util_linux.cc
+@@ -180,11 +180,14 @@ static bool GetStartTime(const string& pid, string* start_time) {
+   return true;
+ }
+ 
++#ifndef __MVS__
++// z/OS does not use posix_spawn (see blaze_util_posix.cc ExecuteDaemon).
+ int ConfigureDaemonProcess(posix_spawnattr_t* attrp,
+                            const StartupOptions &options) {
+   // No interesting platform-specific details to configure on this platform.
+   return 0;
+ }
++#endif
+ 
+ void WriteSystemSpecificProcessIdentifier(const blaze_util::Path &server_dir,
+                                           pid_t server_pid) {
+diff --git a/src/main/cpp/blaze_util_posix.cc b/src/main/cpp/blaze_util_posix.cc
+old mode 100644
+new mode 100755
+index 2793572..772e228
+--- a/src/main/cpp/blaze_util_posix.cc
++++ b/src/main/cpp/blaze_util_posix.cc
+@@ -15,6 +15,28 @@
+ #define _WITH_DPRINTF
+ #include "src/main/cpp/blaze_util_platform.h"
+ 
++#ifdef __MVS__
++// z/OS USS does not provide dprintf(3) or RLIMIT_NPROC.
++#include <stdarg.h>
++#include <unistd.h>
++#define dprintf zos_dprintf
++static inline int zos_dprintf(int fd, const char* fmt, ...) {
++  char buf[4096];
++  va_list ap;
++  va_start(ap, fmt);
++  int n = vsnprintf(buf, sizeof buf, fmt, ap);
++  va_end(ap);
++  if (n > 0) {
++    ssize_t w = write(fd, buf, n);
++    (void)w;
++  }
++  return n;
++}
++#ifndef RLIMIT_NPROC
++#define RLIMIT_NPROC RLIMIT_CPU  // no process-count limit on z/OS; harmless stub
++#endif
++#endif
++
+ #include <dirent.h>
+ #include <errno.h>
+ #include <fcntl.h>
+@@ -386,8 +408,12 @@ bool SocketBlazeServerStartup::IsStillAlive() {
+ //
+ // Returns zero on success or -1 on error, in which case errno is set to the
+ // corresponding error details.
++#ifndef __MVS__
++// z/OS USS does not provide posix_spawn; daemon launching uses fork/execve
++// instead and needs no spawn attributes.
+ int ConfigureDaemonProcess(posix_spawnattr_t* attrp,
+                            const StartupOptions &options);
++#endif
+ 
+ void WriteSystemSpecificProcessIdentifier(const blaze_util::Path& server_dir,
+                                           pid_t server_pid);
+@@ -421,6 +447,24 @@ int ExecuteDaemon(const blaze_util::Path& exe,
+         << "socket creation failed: " << GetLastErrorString();
+   }
+ 
++#ifdef __MVS__
++  // z/OS USS does not provide posix_spawn; launch daemonize with fork/execve.
++  pid_t transient_pid = fork();
++  if (transient_pid == -1) {
++    BAZEL_DIE(blaze_exit_code::INTERNAL_ERROR)
++        << "Failed to fork to execute JVM via " << daemonize
++        << ": " << GetLastErrorString();
++  }
++  if (transient_pid == 0) {
++    // Child: close the parent's end of the notification socketpair.
++    close(fds[0]);
++    CharPP daemonize_argv(daemonize_args);
++    CharPP daemonize_env(env);
++    execve(daemonize.c_str(), daemonize_argv.get(), daemonize_env.get());
++    _exit(blaze_exit_code::INTERNAL_ERROR);
++  }
++  close(fds[1]);
++#else
+   posix_spawn_file_actions_t file_actions;
+   if (posix_spawn_file_actions_init(&file_actions) == -1) {
+     BAZEL_DIE(blaze_exit_code::INTERNAL_ERROR)
+@@ -452,6 +496,7 @@ int ExecuteDaemon(const blaze_util::Path& exe,
+ 
+   posix_spawnattr_destroy(&attrp);
+   posix_spawn_file_actions_destroy(&file_actions);
++#endif  // __MVS__
+ 
+   // Wait for daemonize to exit. This guarantees that the pid file exists.
+   int status;
+diff --git a/src/main/cpp/blaze_util_zos.cc b/src/main/cpp/blaze_util_zos.cc
+new file mode 100644
+index 0000000..fc76f31
+--- /dev/null
++++ b/src/main/cpp/blaze_util_zos.cc
+@@ -0,0 +1,147 @@
++// Copyright 2026 The Bazel Authors. All rights reserved.
++//
++// Licensed under the Apache License, Version 2.0 (the "License");
++// you may not use this file except in compliance with the License.
++// You may obtain a copy of the License at
++//
++//    http://www.apache.org/licenses/LICENSE-2.0
++//
++// Unless required by applicable law or agreed to in writing, software
++// distributed under the License is distributed on an "AS IS" BASIS,
++// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++// See the License for the specific language governing permissions and
++// limitations under the License.
++
++// z/OS (UNIX System Services) platform implementation of the blaze_util
++// interface. Modeled on blaze_util_bsd.cc; no /proc filesystem statistics,
++// no statfs magic numbers, no ioprio.
++
++#if defined(__MVS__)
++
++#define STANDARD_JAVABASE "/home/haritha/dhjava/J21.0_64"
++
++#if !defined(DEFAULT_SYSTEM_JAVABASE)
++# define DEFAULT_SYSTEM_JAVABASE STANDARD_JAVABASE
++#endif
++
++#include <errno.h>  // errno
++#include <limits.h>  // PATH_MAX
++#include <pwd.h>
++#include <signal.h>
++#include <stdlib.h>
++#include <string.h>  // strerror
++#include <sys/types.h>
++#include <time.h>
++#include <unistd.h>
++
++#include <memory>
++#include <string>
++
++#include "src/main/cpp/blaze_util.h"
++#include "src/main/cpp/blaze_util_platform.h"
++#include "src/main/cpp/startup_options.h"
++#include "src/main/cpp/util/errors.h"
++#include "src/main/cpp/util/exit_code.h"
++#include "src/main/cpp/util/logging.h"
++#include "src/main/cpp/util/path.h"
++#include "src/main/cpp/util/port.h"
++#include "src/main/cpp/util/strings.h"
++
++namespace blaze {
++
++using blaze_util::GetLastErrorString;
++using blaze_util::Path;
++using std::string;
++
++// ${XDG_CACHE_HOME}/bazel, a.k.a. ~/.cache/bazel by default (which is the
++// fallback when XDG_CACHE_HOME is not set)
++string GetOutputRoot() {
++  string xdg_cache_home = GetPathEnv("XDG_CACHE_HOME");
++  if (xdg_cache_home.empty()) {
++    char buf[2048];
++    struct passwd pwbuf;
++    struct passwd *pw = nullptr;
++    int uid = getuid();
++    int r = getpwuid_r(uid, &pwbuf, buf, 2048, &pw);
++    if (r == 0 && pw != nullptr) {
++      xdg_cache_home = blaze_util::JoinPath(pw->pw_dir, ".cache");
++    } else {
++      return "/tmp";
++    }
++  }
++
++  return blaze_util::JoinPath(xdg_cache_home, "bazel");
++}
++
++// z/OS does not expose filesystem type magic numbers.
++void WarnFilesystemType(const blaze_util::Path &output_base) {}
++
++string GetSelfPath(const char* argv0) {
++  if (argv0 == nullptr) {
++    return "";
++  }
++  string selfpath = argv0;
++  if (!selfpath.empty() && selfpath[0] != '/') {
++    // Resolve a relative argv0 against the current working directory.
++    char cwd[PATH_MAX];
++    if (getcwd(cwd, sizeof cwd) != nullptr) {
++      selfpath = blaze_util::JoinPath(cwd, selfpath);
++    }
++  }
++  return selfpath;
++}
++
++uint64_t GetMillisecondsMonotonic() {
++  struct timespec ts = {};
++  clock_gettime(CLOCK_MONOTONIC, &ts);
++  return ts.tv_sec * 1000LL + ts.tv_nsec / 1000000LL;
++}
++
++// z/OS does not support ioprio or batch CPU scheduling hints.
++void SetScheduling(bool batch_cpu_scheduling, int io_nice_level) {}
++
++std::unique_ptr<Path> GetProcessCWD(int pid) {
++  // z/OS does not expose per-process working directories.
++  return nullptr;
++}
++
++bool IsSharedLibrary(const string &filename) {
++  return blaze_util::ends_with(filename, ".so");
++}
++
++string GetSystemJavabase() {
++  // If JAVA_HOME is defined, then use it as default.
++  string javahome = GetPathEnv("JAVA_HOME");
++
++  if (!javahome.empty()) {
++    string javac = blaze_util::JoinPath(javahome, "bin/javac");
++    if (access(javac.c_str(), X_OK) == 0) {
++      return javahome;
++    }
++    BAZEL_LOG(WARNING)
++        << "Ignoring JAVA_HOME, because it must point to a JDK, not a JRE.";
++  }
++
++  return DEFAULT_SYSTEM_JAVABASE;
++}
++
++void WriteSystemSpecificProcessIdentifier(const blaze_util::Path &server_dir,
++                                          pid_t server_pid) {}
++
++bool VerifyServerProcess(int pid, const blaze_util::Path &output_base) {
++  // TODO(lberki): This only checks for the process's existence, not whether
++  // its start time matches. Therefore this might accidentally kill an
++  // unrelated process if the server died and the PID got reused.
++  return kill(pid, 0) == 0;
++}
++
++// Not supported on z/OS.
++void ExcludePathFromBackup(const blaze_util::Path &path) {}
++
++int32_t GetExplicitSystemLimit(const int resource) {
++  return -1;
++}
++
++}  // namespace blaze
++
++#endif  // __MVS__
+diff --git a/src/main/cpp/util/file_posix.cc b/src/main/cpp/util/file_posix.cc
+old mode 100644
+new mode 100755
+index ffe9788..eec9a4f
+--- a/src/main/cpp/util/file_posix.cc
++++ b/src/main/cpp/util/file_posix.cc
+@@ -136,12 +136,33 @@ string CreateTempDir(const std::string &prefix) {
+   }
+ 
+   std::string result(prefix + "XXXXXX");
++#ifdef __MVS__
++  // z/OS USS does not provide mkdtemp(3); emulate it with mkstemp + mkdir.
++  {
++    int fd = mkstemp(&result[0]);
++    if (fd < 0) {
++      std::string err = GetLastErrorString();
++      BAZEL_DIE(blaze_exit_code::LOCAL_ENVIRONMENTAL_ERROR)
++          << "could not create temporary directory under " << parent
++          << " to extract install base into (" << err << ")";
++    }
++    close(fd);
++    unlink(result.c_str());
++    if (mkdir(result.c_str(), 0700) != 0) {
++      std::string err = GetLastErrorString();
++      BAZEL_DIE(blaze_exit_code::LOCAL_ENVIRONMENTAL_ERROR)
++          << "could not create temporary directory under " << parent
++          << " to extract install base into (" << err << ")";
++    }
++  }
++#else
+   if (mkdtemp(&result[0]) == nullptr) {
+     std::string err = GetLastErrorString();
+     BAZEL_DIE(blaze_exit_code::LOCAL_ENVIRONMENTAL_ERROR)
+         << "could not create temporary directory under " << parent
+         << " to extract install base into (" << err << ")";
+   }
++#endif
+ 
+   // There's no better way to get the current umask than to set and reset it.
+   const mode_t um = umask(0);
+@@ -303,7 +324,11 @@ bool ReadFile(const Path &filename, void *data, size_t size) {
+ bool WriteFile(const void *data, size_t size, const string &filename,
+                unsigned int perm) {
+   UnlinkPath(filename);  // We don't care about the success of this.
+-  int fd = open(filename.c_str(), O_CREAT | O_WRONLY | O_TRUNC, perm);
++  int fd = open(filename.c_str(), O_CREAT | O_WRONLY | O_TRUNC
++#ifdef O_BINARY
++                | O_BINARY  // z/OS: binary file, not text
++#endif
++                , perm);
+   if (fd == -1) {
+     return false;
+   }
+diff --git a/src/main/cpp/util/md5.cc b/src/main/cpp/util/md5.cc
+old mode 100644
+new mode 100755
+index 220e949..94cae54
+--- a/src/main/cpp/util/md5.cc
++++ b/src/main/cpp/util/md5.cc
+@@ -44,6 +44,13 @@
+ 
+ #include <cinttypes>
+ 
++#ifdef __MVS__
++// z/OS s390x is big-endian and does not provide <endian.h>. The MD5 code
++// operates on little-endian data, so htole32 is a byte swap.
++#include <cstdint>
++static inline uint32_t htole32(uint32_t v) { return __builtin_bswap32(v); }
++#endif
++
+ #if !_STRING_ARCH_unaligned
+ #if defined(_LP64) || defined(_WIN64)
+ #  define UNALIGNED_P(p) (reinterpret_cast<uint64_t>(p) % \
