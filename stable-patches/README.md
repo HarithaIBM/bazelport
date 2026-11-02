@@ -70,3 +70,16 @@ for p in stable-patches/*.patch; do git apply "$p"; done
 zopen's gRPC 1.73 static library when creating the channel to the server
 (`grpc_completion_queue_create_internal`). Batch mode (`--batch`) is fully
 functional and is the recommended mode until this is resolved.
+
+## Refresh history
+
+- **2026-11-02**: Patches `0001` and `0006` regenerated to capture the
+  final Stage 2 fixes made after the Oct-30 revision (notably the fixed
+  `scripts/bootstrap/compile.sh` and the repaired
+  `WorkspaceFileFunction.java` that previously failed with "reached end of
+  file while parsing"). Full set re-verified: applying all 12 patches to a
+  pristine `bazel-7.2.0-original` tree reproduces the working tree exactly
+  (source files; build outputs excluded). The Nov-2 Stage 2 run
+  (`run_stage2.sh`, log `stage2_run135_20261101_233728.log`) completed with
+  rc=0 producing `output/bazel`.
+- Pre-refresh copies: `*.patch.oct30`.

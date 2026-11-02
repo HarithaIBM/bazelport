@@ -29,9 +29,7 @@ index 2e139f5..9f1431b 100644
      BlazeRuntime.main(BAZEL_MODULES, args);
    }
 diff --git a/src/main/java/com/google/devtools/build/lib/bazel/debug/BUILD b/src/main/java/com/google/devtools/build/lib/bazel/debug/BUILD
-old mode 100644
-new mode 100755
-index f85cc4a..d6a55b4
+index f85cc4a..d6a55b4 100644
 --- a/src/main/java/com/google/devtools/build/lib/bazel/debug/BUILD
 +++ b/src/main/java/com/google/devtools/build/lib/bazel/debug/BUILD
 @@ -20,14 +20,14 @@ proto_library(
@@ -53,10 +51,23 @@ index f85cc4a..d6a55b4
  )
  
  filegroup(
+diff --git a/src/main/java/com/google/devtools/build/lib/bazel/rules/BazelStrategyModule.java b/src/main/java/com/google/devtools/build/lib/bazel/rules/BazelStrategyModule.java
+index f503180..08aba03 100644
+--- a/src/main/java/com/google/devtools/build/lib/bazel/rules/BazelStrategyModule.java
++++ b/src/main/java/com/google/devtools/build/lib/bazel/rules/BazelStrategyModule.java
+@@ -72,7 +72,9 @@ public class BazelStrategyModule extends BlazeModule {
+       }
+       spawnStrategies.add("worker");
+       // Sandboxing is not yet available on Windows.
+-      if (OS.getCurrent() != OS.WINDOWS) {
++      // z/OS: processwrapper-sandbox fails (stats.out I/O errors in the
++      // sandboxed execution path); use standalone/local execution instead.
++      if (OS.getCurrent() != OS.WINDOWS && OS.getCurrent() != OS.ZOS) {
+         spawnStrategies.add("sandboxed");
+       }
+       spawnStrategies.add("local");
 diff --git a/src/main/java/com/google/devtools/build/lib/buildtool/BuildTool.java b/src/main/java/com/google/devtools/build/lib/buildtool/BuildTool.java
-old mode 100644
-new mode 100755
-index c637885..f53d2f6
+index c637885..f53d2f6 100644
 --- a/src/main/java/com/google/devtools/build/lib/buildtool/BuildTool.java
 +++ b/src/main/java/com/google/devtools/build/lib/buildtool/BuildTool.java
 @@ -148,6 +148,11 @@ public class BuildTool {
@@ -101,9 +112,7 @@ index c637885..f53d2f6
        detailedExitCode = CrashFailureDetails.detailedExitCodeForThrowable(crash);
        Throwables.throwIfUnchecked(throwable);
 diff --git a/src/main/java/com/google/devtools/build/lib/exec/FileWriteStrategy.java b/src/main/java/com/google/devtools/build/lib/exec/FileWriteStrategy.java
-old mode 100644
-new mode 100755
-index dce4893..56b87f3
+index dce4893..56b87f3 100644
 --- a/src/main/java/com/google/devtools/build/lib/exec/FileWriteStrategy.java
 +++ b/src/main/java/com/google/devtools/build/lib/exec/FileWriteStrategy.java
 @@ -62,6 +62,24 @@ public final class FileWriteStrategy implements FileWriteActionContext {
@@ -132,9 +141,7 @@ index dce4893..56b87f3
          throw new EnvironmentalExecException(e, Code.FILE_WRITE_IO_EXCEPTION);
        }
 diff --git a/src/main/java/com/google/devtools/build/lib/jni/JniLoader.java b/src/main/java/com/google/devtools/build/lib/jni/JniLoader.java
-old mode 100644
-new mode 100755
-index 5ba0a8a..5a05c1e
+index 5ba0a8a..5a05c1e 100644
 --- a/src/main/java/com/google/devtools/build/lib/jni/JniLoader.java
 +++ b/src/main/java/com/google/devtools/build/lib/jni/JniLoader.java
 @@ -49,6 +49,10 @@ public final class JniLoader {
@@ -164,9 +171,7 @@ index 6d7e43e..e8903d9 100644
  
    public static boolean isFullGc(GarbageCollectionNotificationInfo info) {
 diff --git a/src/main/java/com/google/devtools/build/lib/packages/Package.java b/src/main/java/com/google/devtools/build/lib/packages/Package.java
-old mode 100644
-new mode 100755
-index 3f228f2..23b2798
+index 3f228f2..23b2798 100644
 --- a/src/main/java/com/google/devtools/build/lib/packages/Package.java
 +++ b/src/main/java/com/google/devtools/build/lib/packages/Package.java
 @@ -359,7 +359,18 @@ public class Package {
@@ -190,9 +195,7 @@ index 3f228f2..23b2798
      }
  
 diff --git a/src/main/java/com/google/devtools/build/lib/packages/metrics/BUILD b/src/main/java/com/google/devtools/build/lib/packages/metrics/BUILD
-old mode 100644
-new mode 100755
-index 23d2309..beb4199
+index 23d2309..beb4199 100644
 --- a/src/main/java/com/google/devtools/build/lib/packages/metrics/BUILD
 +++ b/src/main/java/com/google/devtools/build/lib/packages/metrics/BUILD
 @@ -43,16 +43,14 @@ proto_library(
@@ -238,9 +241,7 @@ index 23d2309..beb4199
  
  filegroup(
 diff --git a/src/main/java/com/google/devtools/build/lib/repository/ExternalPackageHelper.java b/src/main/java/com/google/devtools/build/lib/repository/ExternalPackageHelper.java
-old mode 100644
-new mode 100755
-index 4f21aef..e69fb6c
+index 4f21aef..e69fb6c 100644
 --- a/src/main/java/com/google/devtools/build/lib/repository/ExternalPackageHelper.java
 +++ b/src/main/java/com/google/devtools/build/lib/repository/ExternalPackageHelper.java
 @@ -130,8 +130,13 @@ public class ExternalPackageHelper {
@@ -267,9 +268,7 @@ index 4f21aef..e69fb6c
        // Stop if the rule is found = continue while it is null.
        return rule == null;
 diff --git a/src/main/java/com/google/devtools/build/lib/rules/repository/RepositoryDelegatorFunction.java b/src/main/java/com/google/devtools/build/lib/rules/repository/RepositoryDelegatorFunction.java
-old mode 100644
-new mode 100755
-index 9200ec0..37d536e
+index 9200ec0..37d536e 100644
 --- a/src/main/java/com/google/devtools/build/lib/rules/repository/RepositoryDelegatorFunction.java
 +++ b/src/main/java/com/google/devtools/build/lib/rules/repository/RepositoryDelegatorFunction.java
 @@ -129,7 +129,10 @@ public final class RepositoryDelegatorFunction implements SkyFunction {
@@ -329,27 +328,8 @@ index 9200ec0..37d536e
      return null;
    }
  
-diff --git a/src/main/java/com/google/devtools/build/lib/bazel/rules/BazelStrategyModule.java b/src/main/java/com/google/devtools/build/lib/bazel/rules/BazelStrategyModule.java
-old mode 100644
-new mode 100755
-index f503180..08aba03
---- a/src/main/java/com/google/devtools/build/lib/bazel/rules/BazelStrategyModule.java
-+++ b/src/main/java/com/google/devtools/build/lib/bazel/rules/BazelStrategyModule.java
-@@ -72,7 +72,9 @@ public class BazelStrategyModule extends BlazeModule {
-       }
-       spawnStrategies.add("worker");
-       // Sandboxing is not yet available on Windows.
--      if (OS.getCurrent() != OS.WINDOWS) {
-+      // z/OS: processwrapper-sandbox fails (stats.out I/O errors in the
-+      // sandboxed execution path); use standalone/local execution instead.
-+      if (OS.getCurrent() != OS.WINDOWS && OS.getCurrent() != OS.ZOS) {
-         spawnStrategies.add("sandboxed");
-       }
-       spawnStrategies.add("local");
 diff --git a/src/main/java/com/google/devtools/build/lib/runtime/BlazeRuntime.java b/src/main/java/com/google/devtools/build/lib/runtime/BlazeRuntime.java
-old mode 100644
-new mode 100755
-index 2e00120..6f10a7a
+index 2e00120..6f10a7a 100644
 --- a/src/main/java/com/google/devtools/build/lib/runtime/BlazeRuntime.java
 +++ b/src/main/java/com/google/devtools/build/lib/runtime/BlazeRuntime.java
 @@ -755,22 +755,58 @@ public final class BlazeRuntime implements BugReport.BlazeRuntimeInterface {
@@ -548,9 +528,7 @@ index 2e00120..6f10a7a
        return ExitCode.COMMAND_LINE_ERROR.getNumericExitCode();
      } catch (AbruptExitException e) {
 diff --git a/src/main/java/com/google/devtools/build/lib/skyframe/ExternalPackageFunction.java b/src/main/java/com/google/devtools/build/lib/skyframe/ExternalPackageFunction.java
-old mode 100644
-new mode 100755
-index d6bfbd4..f1a228e
+index d6bfbd4..f1a228e 100644
 --- a/src/main/java/com/google/devtools/build/lib/skyframe/ExternalPackageFunction.java
 +++ b/src/main/java/com/google/devtools/build/lib/skyframe/ExternalPackageFunction.java
 @@ -20,6 +20,7 @@ import com.google.devtools.build.lib.skyframe.serialization.VisibleForSerializat
@@ -594,9 +572,7 @@ index d6bfbd4..f1a228e
      if (env.valuesMissing()) {
        return null;
 diff --git a/src/main/java/com/google/devtools/build/lib/skyframe/PackageFunction.java b/src/main/java/com/google/devtools/build/lib/skyframe/PackageFunction.java
-old mode 100644
-new mode 100755
-index 0ae6280..acbf662
+index 0ae6280..acbf662 100644
 --- a/src/main/java/com/google/devtools/build/lib/skyframe/PackageFunction.java
 +++ b/src/main/java/com/google/devtools/build/lib/skyframe/PackageFunction.java
 @@ -575,6 +575,22 @@ public class PackageFunction implements SkyFunction {
@@ -670,9 +646,7 @@ index 0ae6280..acbf662
        throw PackageFunctionException.builder()
            .setType(PackageFunctionException.Type.BUILD_FILE_CONTAINS_ERRORS)
 diff --git a/src/main/java/com/google/devtools/build/lib/skyframe/RepositoryMappingFunction.java b/src/main/java/com/google/devtools/build/lib/skyframe/RepositoryMappingFunction.java
-old mode 100644
-new mode 100755
-index d01fd4d..7a88e4b
+index d01fd4d..7a88e4b 100644
 --- a/src/main/java/com/google/devtools/build/lib/skyframe/RepositoryMappingFunction.java
 +++ b/src/main/java/com/google/devtools/build/lib/skyframe/RepositoryMappingFunction.java
 @@ -51,6 +51,15 @@ public class RepositoryMappingFunction implements SkyFunction {
@@ -764,9 +738,7 @@ index 6d61865..2bb51c7 100644
      }
  
 diff --git a/src/main/java/com/google/devtools/build/skyframe/BUILD b/src/main/java/com/google/devtools/build/skyframe/BUILD
-old mode 100644
-new mode 100755
-index 7b07ff1..32dbf9e
+index 7b07ff1..32dbf9e 100644
 --- a/src/main/java/com/google/devtools/build/skyframe/BUILD
 +++ b/src/main/java/com/google/devtools/build/skyframe/BUILD
 @@ -109,14 +109,14 @@ proto_library(
