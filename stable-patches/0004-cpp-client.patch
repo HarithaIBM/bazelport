@@ -1,7 +1,5 @@
 diff --git a/src/main/cpp/BUILD b/src/main/cpp/BUILD
-old mode 100644
-new mode 100755
-index 3a5c0ba..d8fb3b2
+index 3a5c0ba..d8fb3b2 100644
 --- a/src/main/cpp/BUILD
 +++ b/src/main/cpp/BUILD
 @@ -30,6 +30,10 @@ cc_library(
@@ -16,9 +14,7 @@ index 3a5c0ba..d8fb3b2
              "blaze_util_windows.cc",
          ],
 diff --git a/src/main/cpp/blaze.cc b/src/main/cpp/blaze.cc
-old mode 100644
-new mode 100755
-index 128104d..046f938
+index 128104d..046f938 100644
 --- a/src/main/cpp/blaze.cc
 +++ b/src/main/cpp/blaze.cc
 @@ -1243,6 +1243,11 @@ static map<string, EnvVarValue> PrepareEnvironmentForJvm() {
@@ -84,9 +80,7 @@ index 128104d..046f938
  
    pipe_.reset(blaze_util::CreatePipe());
 diff --git a/src/main/cpp/blaze_util_linux.cc b/src/main/cpp/blaze_util_linux.cc
-old mode 100644
-new mode 100755
-index e202a74..c842c5c
+index e202a74..c842c5c 100644
 --- a/src/main/cpp/blaze_util_linux.cc
 +++ b/src/main/cpp/blaze_util_linux.cc
 @@ -180,11 +180,14 @@ static bool GetStartTime(const string& pid, string* start_time) {
@@ -105,9 +99,7 @@ index e202a74..c842c5c
  void WriteSystemSpecificProcessIdentifier(const blaze_util::Path &server_dir,
                                            pid_t server_pid) {
 diff --git a/src/main/cpp/blaze_util_posix.cc b/src/main/cpp/blaze_util_posix.cc
-old mode 100644
-new mode 100755
-index 2793572..772e228
+index 2793572..772e228 100644
 --- a/src/main/cpp/blaze_util_posix.cc
 +++ b/src/main/cpp/blaze_util_posix.cc
 @@ -15,6 +15,28 @@
@@ -338,10 +330,31 @@ index 0000000..fc76f31
 +}  // namespace blaze
 +
 +#endif  // __MVS__
+diff --git a/src/main/cpp/main.cc b/src/main/cpp/main.cc
+index 0ea770a..906286b 100644
+--- a/src/main/cpp/main.cc
++++ b/src/main/cpp/main.cc
+@@ -21,7 +21,18 @@
+ #include "src/main/cpp/startup_options.h"
+ #include "src/main/cpp/workspace_layout.h"
+ 
++#ifdef __MVS__
++// z/OS: The zopen gRPC 1.73 static libraries require an explicit grpc_init()
++// before any gRPC use. Without it, the first completion-queue creation inside
++// grpc_completion_queue_create_internal crashes with a protection exception
++// (0C4) — lazy core initialization does not work correctly on z/OS.
++extern "C" void grpc_init(void);
++#endif
++
+ int main(int argc, char **argv) {
++#ifdef __MVS__
++  grpc_init();
++#endif
+   uint64_t start_time = blaze::GetMillisecondsMonotonic();
+   std::unique_ptr<blaze::WorkspaceLayout> workspace_layout(
+       new blaze::WorkspaceLayout());
 diff --git a/src/main/cpp/util/file_posix.cc b/src/main/cpp/util/file_posix.cc
-old mode 100644
-new mode 100755
-index ffe9788..df24cdd
+index ffe9788..df24cdd 100644
 --- a/src/main/cpp/util/file_posix.cc
 +++ b/src/main/cpp/util/file_posix.cc
 @@ -136,12 +136,33 @@ string CreateTempDir(const std::string &prefix) {
@@ -417,9 +430,7 @@ index ffe9788..df24cdd
  
  static bool CanAccess(const string &path, bool read, bool write, bool exec) {
 diff --git a/src/main/cpp/util/md5.cc b/src/main/cpp/util/md5.cc
-old mode 100644
-new mode 100755
-index 220e949..94cae54
+index 220e949..94cae54 100644
 --- a/src/main/cpp/util/md5.cc
 +++ b/src/main/cpp/util/md5.cc
 @@ -44,6 +44,13 @@

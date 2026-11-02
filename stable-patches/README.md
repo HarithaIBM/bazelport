@@ -66,10 +66,14 @@ for p in stable-patches/*.patch; do git apply "$p"; done
 
 ## Known remaining issue
 
-**Client-server (daemon) mode**: the C++ client crashes (0C4/0C9) inside
-zopen's gRPC 1.73 static library when creating the channel to the server
-(`grpc_completion_queue_create_internal`). Batch mode (`--batch`) is fully
-functional and is the recommended mode until this is resolved.
+**Client-server (daemon) mode**: crashes inside zopen's gRPC 1.73 static
+libraries — see `GRPC_DAEMON_MODE_ANALYSIS.md` for the full diagnosis and
+minimal reproducers (`grpc_repro/`). Root cause is in the zopen gRPC port
+itself (its own `test.status` says "Skipped"): after a channel is created,
+any new completion queue branches to NULL inside
+`grpc_completion_queue_create_internal`, and event-engine threads crash in
+absl time code. Batch mode (`--batch`) is fully functional and is the
+recommended mode until the zopen port is fixed.
 
 ## Refresh history
 
