@@ -33,18 +33,22 @@ fi
 
 # TODO: remove `--repo_env=BAZEL_HTTP_RULES_URLS_AS_DEFAULT_CANONICAL_ID=0` once all dependencies are
 #  mirrored. See https://github.com/bazelbuild/bazel/pull/19549 for more context.
-_BAZEL_ARGS="--spawn_strategy=standalone \
+# z/OS: Added explicit PATH to action_env so uname and other tools are found
+# z/OS: Configure Python explicitly for z/OS instead of autodetection
+# z/OS: Disable bzlmod to avoid Python platform detection issues - use WORKSPACE mode
+# z/OS: Comment out --spawn_strategy as it's not recognized by bootstrap bazel
+_BAZEL_ARGS="--compilation_mode=opt \
       --nojava_header_compilation \
-      --strategy=Javac=worker --worker_quit_after_build --ignore_unsupported_sandboxing \
-      --compilation_mode=opt \
       --repository_cache=derived/repository_cache \
       --repo_env=BAZEL_HTTP_RULES_URLS_AS_DEFAULT_CANONICAL_ID=0 \
       --extra_toolchains=//scripts/bootstrap:all \
-      --extra_toolchains=@bazel_tools//tools/python:autodetecting_toolchain \
-      --enable_bzlmod \
+      --noenable_bzlmod \
       --check_direct_dependencies=error \
       --lockfile_mode=update \
       --override_repository=$(cat derived/maven/MAVEN_CANONICAL_REPO_NAME)=derived/maven \
+      --action_env=PATH=${PATH} \
+      --action_env=PYTHON_BIN_PATH=/home/haritha/bazelDepTools/python/bin/python3 \
+      --python_path=/home/haritha/bazelDepTools/python/bin/python3 \
       ${DIST_BOOTSTRAP_ARGS:-} \
       ${EXTRA_BAZEL_ARGS:-}"
 
