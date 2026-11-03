@@ -106,10 +106,10 @@ index 0000000..a75e906
 +    visibility = ["//visibility:public"],
 +)
 diff --git a/scripts/bootstrap/bootstrap.sh b/scripts/bootstrap/bootstrap.sh
-index 9c7cdbe..d345b03 100644
+index 9c7cdbe..f2e5bde 100644
 --- a/scripts/bootstrap/bootstrap.sh
 +++ b/scripts/bootstrap/bootstrap.sh
-@@ -33,18 +33,22 @@ fi
+@@ -33,18 +33,23 @@ fi
  
  # TODO: remove `--repo_env=BAZEL_HTTP_RULES_URLS_AS_DEFAULT_CANONICAL_ID=0` once all dependencies are
  #  mirrored. See https://github.com/bazelbuild/bazel/pull/19549 for more context.
@@ -132,8 +132,9 @@ index 9c7cdbe..d345b03 100644
        --lockfile_mode=update \
        --override_repository=$(cat derived/maven/MAVEN_CANONICAL_REPO_NAME)=derived/maven \
 +      --action_env=PATH=${PATH} \
-+      --action_env=PYTHON_BIN_PATH=${PYTHON_BIN_PATH:-/home/haritha/bazelDepTools/python/bin/python3} \
-+      --python_path=${PYTHON_BIN_PATH:-/home/haritha/bazelDepTools/python/bin/python3} \
++      --action_env=PYTHON_BIN_PATH=${PYTHON_BIN_PATH:-${BAZELPORT_ROOT}/local_repos/python_wrapper/python3} \
++      --action_env=PYTHON_HOME=${PYTHON_HOME} \
++      --python_path=${PYTHON_BIN_PATH:-${BAZELPORT_ROOT}/local_repos/python_wrapper/python3} \
        ${DIST_BOOTSTRAP_ARGS:-} \
        ${EXTRA_BAZEL_ARGS:-}"
  

@@ -107,7 +107,7 @@ index 0000000..9faaba6
 +    name = "local_zos",
 +)
 diff --git a/tools/cpp/unix_cc_configure.bzl b/tools/cpp/unix_cc_configure.bzl
-index 2184487..58c8a72 100644
+index 2184487..55596ae 100644
 --- a/tools/cpp/unix_cc_configure.bzl
 +++ b/tools/cpp/unix_cc_configure.bzl
 @@ -36,6 +36,14 @@ def _uniq(iterable):
@@ -125,7 +125,7 @@ index 2184487..58c8a72 100644
      return execute(repository_ctx, [script_path] + dirs)
  
  def _prepare_include_path(repo_ctx, path):
-@@ -350,6 +358,15 @@ def configure_unix_toolchain(repository_ctx, cpu_value, overriden_tools):
+@@ -350,6 +358,16 @@ def configure_unix_toolchain(repository_ctx, cpu_value, overriden_tools):
      is_clang = _is_clang(repository_ctx, cc)
      overriden_tools = dict(overriden_tools)
      overriden_tools["gcc"] = cc
@@ -137,11 +137,12 @@ index 2184487..58c8a72 100644
 +    if ("z/os" in repository_ctx.os.name.lower()
 +        or "os/390" in repository_ctx.os.name.lower()
 +        or repository_ctx.os.name.lower() == "os390"):
-+        overriden_tools["gcc"] = "/home/haritha/code/bazel-7.2.0/bazelport/local_repos/zos_cc_tools/zos_cc"
++        overriden_tools["gcc"] = repository_ctx.os.environ.get(
++            "BAZELPORT_ROOT", "..") + "/local_repos/zos_cc_tools/zos_cc"
      overriden_tools["gcov"] = _find_generic(
          repository_ctx,
          "gcov",
-@@ -443,11 +460,18 @@ def configure_unix_toolchain(repository_ctx, cpu_value, overriden_tools):
+@@ -443,11 +461,18 @@ def configure_unix_toolchain(repository_ctx, cpu_value, overriden_tools):
      if gold_or_lld_linker_path:
          force_linker_flags.append("-fuse-ld=" + gold_or_lld_linker_path)
  
@@ -161,7 +162,7 @@ index 2184487..58c8a72 100644
          repository_ctx,
          cc,
          force_linker_flags,
-@@ -534,7 +558,10 @@ def configure_unix_toolchain(repository_ctx, cpu_value, overriden_tools):
+@@ -534,7 +559,10 @@ def configure_unix_toolchain(repository_ctx, cpu_value, overriden_tools):
          ["/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk"],
      )
  
@@ -173,7 +174,7 @@ index 2184487..58c8a72 100644
      if generate_modulemap:
          repository_ctx.file("module.modulemap", _generate_system_module_map(
              repository_ctx,
-@@ -578,12 +605,23 @@ def configure_unix_toolchain(repository_ctx, cpu_value, overriden_tools):
+@@ -578,12 +606,23 @@ def configure_unix_toolchain(repository_ctx, cpu_value, overriden_tools):
                  "local",
                  False,
              )),
@@ -200,7 +201,7 @@ index 2184487..58c8a72 100644
              "%{target_cpu}": escape_string(get_env_var(
                  repository_ctx,
                  "BAZEL_TARGET_CPU",
-@@ -601,7 +639,14 @@ def configure_unix_toolchain(repository_ctx, cpu_value, overriden_tools):
+@@ -601,7 +640,14 @@ def configure_unix_toolchain(repository_ctx, cpu_value, overriden_tools):
              ),
              "%{cxx_builtin_include_directories}": get_starlark_list(builtin_include_directories),
              "%{compile_flags}": get_starlark_list(
@@ -216,19 +217,21 @@ index 2184487..58c8a72 100644
                      "-fstack-protector",
                      # All warnings are enabled.
                      "-Wall",
-@@ -625,14 +670,24 @@ def configure_unix_toolchain(repository_ctx, cpu_value, overriden_tools):
+@@ -625,14 +671,26 @@ def configure_unix_toolchain(repository_ctx, cpu_value, overriden_tools):
              "%{cxx_flags}": get_starlark_list(cxx_opts + _escaped_cplus_include_paths(repository_ctx)),
              "%{conly_flags}": get_starlark_list(conly_opts),
              "%{link_flags}": get_starlark_list(force_linker_flags + (
 +                # z/OS: librt/libdl/libpthread do not exist as separate archives
 +                # (the LE runtime provides them); point the linker at empty stub
 +                # archives so that -lrt/-ldl/-lpthread resolve.
-+                ["-L/home/haritha/code/bazel-7.2.0/bazelport/local_repos/zos_stub_libs"] if is_zos else []
++                ["-L" + repository_ctx.os.environ.get(
++                    "BAZELPORT_ROOT", "..") + "/local_repos/zos_stub_libs"] if is_zos else []
 +            ) + (
 +                # z/OS: zoslib provides ASCII-transparent stdio wrappers
 +                # (fopen -> __fopen_ascii etc.) needed by tools that read
 +                # Bazel-written ASCII files (params files, manifests).
-+                ["/home/haritha/zopen_23may/zopen/usr/local/zopen/zoslib/zoslib-v4.0.5.20260618_120743.zos/lib/libzoslib.a"] if is_zos else []
++                [repository_ctx.os.environ.get(
++                    "ZOSLIB_HOME", "") + "/lib/libzoslib.a"] if is_zos else []
 +            ) + (
                  ["-Wl,-no-as-needed"] if is_as_needed_supported else []
 -            ) + _add_linker_option_if_supported(
@@ -243,7 +246,7 @@ index 2184487..58c8a72 100644
                  [
                      "-headerpad_max_install_names",
                  ] if darwin else [
-@@ -646,7 +701,7 @@ def configure_unix_toolchain(repository_ctx, cpu_value, overriden_tools):
+@@ -646,7 +704,7 @@ def configure_unix_toolchain(repository_ctx, cpu_value, overriden_tools):
                      "-pass-exit-codes",
                  )
              ) + link_opts),
@@ -252,7 +255,7 @@ index 2184487..58c8a72 100644
              "%{opt_compile_flags}": get_starlark_list(
                  [
                      # No debug symbols.
-@@ -674,13 +729,13 @@ def configure_unix_toolchain(repository_ctx, cpu_value, overriden_tools):
+@@ -674,13 +732,13 @@ def configure_unix_toolchain(repository_ctx, cpu_value, overriden_tools):
                  ],
              ),
              "%{opt_link_flags}": get_starlark_list(

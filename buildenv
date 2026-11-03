@@ -195,40 +195,124 @@ export ZOPEN_CONFIGURE="skip"
 export ZOPEN_MAKE="zopen_bazel_make"
 export ZOPEN_INSTALL="zopen_bazel_install"
 # ============================================================================
-# Toolchain locations — override via environment variables; defaults are
-# known-good locations on this system. BAZELPORT_ROOT is derived from this
-# buildenv file's location so the port works from any checkout path.
+# Toolchain locations — everything is configurable via environment variables.
+# No hardcoded user paths. Values are auto-detected where possible; the build
+# fails fast with a clear message when something cannot be found.
+#
+#   BAZELPORT_ROOT  port root (marker: local_repos/ + stable-patches/)
+#   JAVA_HOME       Java 21 JDK (bootstrap javac + local_jdk runtime)
+#   PYTHON_HOME     IBM Open Enterprise SDK for Python (bazel build actions)
+#   COMPILER_PATH   z/OS clang (ASCII mode) driver
+#   ZOPEN_ROOTFS    zopen rootfs (GNU tools in usr/local/altbin, packages
+#                   under usr/local/zopen/<pkg>/<pkg>-<ver>.zos)
+#   ZOSLIB_HOME     zoslib package dir      (default: auto under ZOPEN_ROOTFS)
+#   GRPC_HOME       zopen gRPC package dir  (default: auto under ZOPEN_ROOTFS)
+#   SQLITE_HOME     zopen sqlite package dir(default: auto under ZOPEN_ROOTFS)
+#   OPENSSL_HOME    zopen openssl package dir(default: auto under ZOPEN_ROOTFS)
 # ============================================================================
-# Port root: prefer $BAZELPORT_ROOT from the environment; else locate the
-# directory that actually contains the port (marker: local_repos/ +
-# stable-patches/). zopen build may source this file from an arbitrary
-# context where BASH_SOURCE/cwd do not point at the port, so verify.
+
+# --- BAZELPORT_ROOT: marker-based detection (zopen may source this file
+# --- from an arbitrary context where BASH_SOURCE/cwd do not point at the port)
 if [ -z "${BAZELPORT_ROOT:-}" ]; then
     BAZELPORT_ROOT=""
     _be_dir="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd)"
-    for _d in "${_be_dir}" "$PWD" "$PWD/.." "$(dirname "${_be_dir}" 2>/dev/null)" /home/haritha/code/bazel-7.2.0/bazelport; do
+    for _d in "${_be_dir}" "$PWD" "$PWD/.." "$(dirname "${_be_dir}" 2>/dev/null)"; do
         if [ -d "${_d}/local_repos" ] && [ -d "${_d}/stable-patches" ]; then
             BAZELPORT_ROOT="${_d}"
             break
         fi
     done
 fi
-export BAZELPORT_ROOT="${BAZELPORT_ROOT:-/home/haritha/code/bazel-7.2.0/bazelport}"
-export JAVA_HOME="${JAVA_HOME:-/home/haritha/dhjava/J21.0_64}"
-export PYTHON_HOME="${PYTHON_HOME:-/home/haritha/bazelDepTools/python}"
-export COMPILER_PATH="${COMPILER_PATH:-/home/haritha/install_test/usr/lpp/IBM/oelcpp/v3r0/bin/clang}"
-export ZOPEN_ROOTFS="${ZOPEN_ROOTFS:-}"
+if [ -z "${BAZELPORT_ROOT}" ] || [ ! -d "${BAZELPORT_ROOT}/local_repos" ]; then
+    echo "ERROR: cannot locate the bazelport root (needs local_repos/ and stable-patches/). Set BAZELPORT_ROOT." >&2
+    return 1 2>/dev/null || exit 1
+fi
+export BAZELPORT_ROOT
 
+# --- JAVA_HOME: env, else derive from `java` on PATH
+if [ -z "${JAVA_HOME:-}" ]; then
+    if _java="$(command -v java 2>/dev/null)" && [ -n "$_java" ]; then
+        JAVA_HOME="$(cd "$(dirname "$_java")/.." && pwd)"
+    else
+        echo "ERROR: JAVA_HOME not set and no java found on PATH." >&2
+        return 1 2>/dev/null || exit 1
+    fi
+fi
+export JAVA_HOME
 
-# ============================================================================
-# Full Bazel build: Stage 1 (bootstrap) + Stage 2 (Bazel builds itself).
-#
-# The bootstrap jar (output/libblaze.jar) is an INTERMEDIATE artifact only.
-# The final product of this port is output/bazel — the Stage 2 binary built
-# by the bootstrap Bazel driving the real Bazel build (src:bazel_nojdk).
-#
-# This function mirrors the verified run_stage2.sh flow.
-# ============================================================================
+# --- PYTHON_HOME: must point at the IBM Open Enterprise SDK for Python
+# --- (a z/OS program-object python whose DLLs need LIBPATH; the port's
+# --- python_wrapper handles that for bazel action spawns)
+if [ -z "${PYTHON_HOME:-}" ] || [ ! -x "${PYTHON_HOME}/bin/python3" ]; then
+    # Probe the host-built python wrapper — it was compiled against a
+    # specific SDK and can report its prefix.
+    if _pyprefix="$("${BAZELPORT_ROOT}/local_repos/python_wrapper/python3" -c "import sys; print(sys.prefix)" 2>/dev/null)" \
+        && [ -n "${_pyprefix}" ] && [ -x "${_pyprefix}/bin/python3" ]; then
+        PYTHON_HOME="${_pyprefix}"
+    fi
+fi
+if [ -z "${PYTHON_HOME:-}" ] || [ ! -x "${PYTHON_HOME}/bin/python3" ]; then
+    echo "ERROR: PYTHON_HOME must point at the Python SDK (needs bin/python3, e.g. the IBM Open Enterprise SDK for Python)." >&2
+    return 1 2>/dev/null || exit 1
+fi
+export PYTHON_HOME
+export PYTHON_HOME
+
+# --- COMPILER_PATH: env, else `clang` from PATH
+if [ -z "${COMPILER_PATH:-}" ]; then
+    if ! COMPILER_PATH="$(command -v clang 2>/dev/null)"; then
+        echo "ERROR: COMPILER_PATH not set and no clang found on PATH." >&2
+        return 1 2>/dev/null || exit 1
+    fi
+fi
+export COMPILER_PATH
+
+# --- ZOPEN_ROOTFS: env, else derive from zopen's own ZOPEN_OLD_PATH, else
+# --- common locations. Must provide GNU tools in usr/local/altbin.
+if [ -z "${ZOPEN_ROOTFS:-}" ]; then
+    case ":${ZOPEN_OLD_PATH:-}:" in
+        *:*/usr/local/bin:*)
+            ZOPEN_ROOTFS="${ZOPEN_OLD_PATH%%:/usr/local/bin:*}"
+            ;;
+    esac
+fi
+if [ -z "${ZOPEN_ROOTFS}" ] || [ ! -x "${ZOPEN_ROOTFS}/usr/local/altbin/grep" ]; then
+    for d in "${ZOPEN_ROOTFS:-}" /data/zopen /ZOPEN/zopen; do
+        [ -n "$d" ] && [ -x "$d/usr/local/altbin/grep" ] && ZOPEN_ROOTFS="$d" && break
+    done
+fi
+if [ -z "${ZOPEN_ROOTFS}" ] || [ ! -x "${ZOPEN_ROOTFS}/usr/local/altbin/grep" ]; then
+    echo "ERROR: cannot locate the zopen rootfs (needs usr/local/altbin/grep). Set ZOPEN_ROOTFS." >&2
+    return 1 2>/dev/null || exit 1
+fi
+export ZOPEN_ROOTFS
+
+# --- zopen package dirs: env, else auto-detect (single-version glob)
+_zopen_pkg() {  # $1 = env var name, $2 = package name
+    _var="$1"; _pkg="$2"
+    if [ -z "${!_var:-}" ] || [ ! -d "${!_var}" ]; then
+        # prefer the active (unversioned) install symlink; else the newest
+        # versioned .zos directory
+        _hit=""
+        [ -d "${ZOPEN_ROOTFS}/usr/local/zopen/${_pkg}/${_pkg}" ] && \
+            _hit="${ZOPEN_ROOTFS}/usr/local/zopen/${_pkg}/${_pkg}"
+        if [ -z "$_hit" ]; then
+            _hit="$(ls -d "${ZOPEN_ROOTFS}/usr/local/zopen/${_pkg}/"*.zos 2>/dev/null | sort -V | tail -1)"
+        fi
+        if [ -n "$_hit" ]; then
+            eval "export $_var=\"\$_hit\""
+        fi
+    else
+        export "$_var"
+    fi
+}
+_zopen_pkg ZOSLIB_HOME zoslib
+_zopen_pkg GRPC_HOME grpc
+_zopen_pkg SQLITE_HOME sqlite
+_zopen_pkg ZLIB_HOME zlib
+_zopen_pkg OPENSSL_HOME openssl
+unset -f _zopen_pkg
+
 zopen_bazel_make() {
     echo "==== Bazel Full Build (Stage 1 + Stage 2) ===="
 
@@ -237,16 +321,6 @@ zopen_bazel_make() {
         cd ..
     fi
 
-    # --- toolchain environment ---
-    # zopen rootfs: honor ZOPEN_ROOTFS, else known-good local locations.
-    # Detection requires a working GNU grep (zopen puts GNU coreutils/grep/
-    # findutils in usr/local/altbin; usr/local/bin only has ggrep/gfind).
-    if [ -z "${ZOPEN_ROOTFS}" ]; then
-        for d in /data/zopen /home/haritha/zopen_23may/zopen; do
-            [ -x "$d/usr/local/altbin/grep" ] && ZOPEN_ROOTFS="$d" && break
-        done
-    fi
-    ZOPEN_ROOTFS="${ZOPEN_ROOTFS:-/data/zopen}"
     # python3 for build actions (build_tar wrappers, genrules). The wrapper
     # sets LIBPATH itself — bazel action spawns don't inherit the server's.
     # Honor a pre-set PYTHON_BIN_PATH only if it actually works (login envs
@@ -271,7 +345,9 @@ zopen_bazel_make() {
     export JAVA_TOOL_OPTIONS="-Dfile.encoding=UTF-8 ${JAVA_TOOL_OPTIONS:-}"
     # Explicit annotation processors (discovery is unreliable on z/OS javac)
     export BAZEL_JAVAC_OPTS="-processor com.google.auto.value.processor.AutoValueProcessor,com.google.auto.value.processor.AutoOneOfProcessor -J-Xmx4g -J-Xms2g"
-    export EXTRA_BAZEL_ARGS="--tool_java_runtime_version=local_jdk --java_runtime_version=local_jdk --spawn_strategy=standalone --features=no_dotd_file --cxxopt=-std=c++17 --host_cxxopt=-std=c++17 --@rules_jvm_external//settings:stamp_manifest=False"
+    # --color=no: bazel terminal progress (spinners, ANSI) renders as garbled
+    # EBCDIC in zopen logs; disable colors to reduce the noise.
+    export EXTRA_BAZEL_ARGS="--tool_java_runtime_version=local_jdk --java_runtime_version=local_jdk --spawn_strategy=standalone --features=no_dotd_file --cxxopt=-std=c++17 --host_cxxopt=-std=c++17 --@rules_jvm_external//settings:stamp_manifest=False --color=no"
     export VERBOSE=${VERBOSE:-no}
 
     # CRITICAL: normal mode for Stage 2 (full WORKSPACE machinery).
@@ -280,7 +356,71 @@ zopen_bazel_make() {
     unset ZOS_BOOTSTRAP_MODE
 
     hash -r
-    chmod +x compile.sh
+    # z/OS file tagging: the dist extract leaves files UNTAGGED, which
+    # clang action spawns (running without _TAG_REDIR) read as EBCDIC
+    # garbage ("unexpected character <U+0080>"). Tag the tree: everything
+    # binary (raw bytes for ASCII-mode compilers), then text extensions as
+    # ISO8859-1 so EBCDIC shell tools (/bin/sh) can read scripts. Idempotent.
+    if find src -name "*.cc" -type f -exec /bin/chtag -p {} + 2>/dev/null | grep -q -- "- untagged"; then
+        echo "Tagging source tree (untagged files detected)..."
+        find . -type f \
+            \! -path "*/.git/*" \! -path "./output/*" \! -path "./bazel-*" \
+            \! -path "*/bazel-out/*" \! -path "./derived/*" \
+            -exec /bin/chtag -b {} + 2>/dev/null
+        # text-tag everything that is not a known binary type (covers
+        # extensionless BUILD-adjacent files, dotfiles, scripts, sources).
+        # NOTE: files read by the JVM via NIO (Files.newBufferedReader — e.g.
+        # bazel_downloader.cfg, *.json, *.options) MUST stay BINARY-tagged:
+        # z/OS converts text-tagged files to the process codepage on read,
+        # which breaks UTF-8 decoding (MalformedInputException).
+        find . -type f \
+            \! -path "*/.git/*" \! -path "./output/*" \! -path "./bazel-*" \
+            \! -path "*/bazel-out/*" \! -path "./derived/*" \
+            \! -name "*.jar" \! -name "*.zip" \! -name "*.war" \! -name "*.ear" \
+            \! -name "*.class" \! -name "*.so" \! -name "*.a" \! -name "*.o" \
+            \! -name "*.dll" \! -name "*.exe" \! -name "*.png" \! -name "*.jpg" \
+            \! -name "*.jpeg" \! -name "*.gif" \! -name "*.ico" \! -name "*.pdf" \
+            \! -name "*.tar" \! -name "*.gz" \! -name "*.tgz" \! -name "*.jar.exe" \
+            \! -name "*.zip.exe" \
+            \! -name "*.cfg" \! -name "*.options" \! -name "*.version" \
+            \! -name "*.json" \! -name "*.bazelrc" \! -name "*.patch" \
+            -exec /bin/chtag -tc ISO8859-1 {} + 2>/dev/null
+        echo "Tree tagging complete."
+    fi
+    # Generate local_repos wrapper BUILD files from .in templates: they wrap
+    # system-installed zopen artifacts, and BUILD files cannot read the
+    # environment, so the paths are templated and substituted here.
+    _tmpl() {  # $1=template $2=out; remaining args are sed expressions
+        _in="$1"; _out="$2"; shift 2
+        sed "$@" "${_in}" > "${_out}.tmp" && mv "${_out}.tmp" "${_out}"
+        # preserve mode and z/OS file tag from the template
+        chmod --reference="${_in}" "${_out}" 2>/dev/null || true
+        _tag="$(/bin/chtag -p "${_in}" 2>/dev/null | awk '{print $1, $2}')"
+        case "${_tag}" in
+            "t "*) /bin/chtag -tc $(echo "${_tag}" | awk '{print $2}') "${_out}" 2>/dev/null ;;
+        esac
+    }
+    _repos="${BAZELPORT_ROOT}/local_repos"
+    _gr="${GRPC_HOME:-${ZOPEN_ROOTFS}/usr/local/zopen/grpc/grpc}"
+    _tmpl "${_repos}/com_github_grpc_grpc/BUILD.in" "${_repos}/com_github_grpc_grpc/BUILD" \
+        -e "s|@GRPC_LIB_DIR@|${_gr}/lib|g"
+    _tmpl "${_repos}/com_google_protobuf/BUILD.in" "${_repos}/com_google_protobuf/BUILD" \
+        -e "s|@GRPC_LIB_DIR@|${_gr}/lib|g" \
+        -e "s|@ZLIB_LIB@|${ZLIB_HOME}/lib/libz.a|g" \
+        -e "s|@ZOSLIB_A@|${ZOSLIB_HOME}/lib/libzoslib.a|g" \
+        -e "s|@PROTOC@|${ZOPEN_ROOTFS}/usr/local/bin/protoc|g"
+    _tmpl "${_repos}/com_google_protobuf/protoc_wrapper.sh.in" "${_repos}/com_google_protobuf/protoc_wrapper.sh" \
+        -e "s|@PROTOC_BIN@|${_gr}/bin/protoc-31.0.0|g"
+    _tmpl "${_repos}/sqlite3/BUILD.in" "${_repos}/sqlite3/BUILD" \
+        -e "s|@SQLITE_LIB@|${SQLITE_HOME}/lib/libsqlite3.a|g" \
+        -e "s|@SQLITE_INC@|${SQLITE_HOME}/include|g"
+    unset -f _tmpl
+    # WORKSPACE references local_repos via the relative path ../local_repos
+    # (correct when building in the .bazelci extract). When building from the
+    # port root itself, provide the same relative path via a symlink.
+    if [ -d "local_repos" ] && [ ! -e "../local_repos" ]; then
+        ln -sfn "$(basename "${BAZELPORT_ROOT}")/local_repos" "${BAZELPORT_ROOT}/../local_repos"
+    fi
 
     echo "Running FULL Bazel compile.sh in $(pwd)..."
     bash ./compile.sh
