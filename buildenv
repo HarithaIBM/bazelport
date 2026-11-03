@@ -199,7 +199,21 @@ export ZOPEN_INSTALL="zopen_bazel_install"
 # known-good locations on this system. BAZELPORT_ROOT is derived from this
 # buildenv file's location so the port works from any checkout path.
 # ============================================================================
-export BAZELPORT_ROOT="${BAZELPORT_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)}"
+# Port root: prefer $BAZELPORT_ROOT from the environment; else locate the
+# directory that actually contains the port (marker: local_repos/ +
+# stable-patches/). zopen build may source this file from an arbitrary
+# context where BASH_SOURCE/cwd do not point at the port, so verify.
+if [ -z "${BAZELPORT_ROOT:-}" ]; then
+    BAZELPORT_ROOT=""
+    _be_dir="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd)"
+    for _d in "${_be_dir}" "$PWD" "$PWD/.." "$(dirname "${_be_dir}" 2>/dev/null)" /home/haritha/code/bazel-7.2.0/bazelport; do
+        if [ -d "${_d}/local_repos" ] && [ -d "${_d}/stable-patches" ]; then
+            BAZELPORT_ROOT="${_d}"
+            break
+        fi
+    done
+fi
+export BAZELPORT_ROOT="${BAZELPORT_ROOT:-/home/haritha/code/bazel-7.2.0/bazelport}"
 export JAVA_HOME="${JAVA_HOME:-/home/haritha/dhjava/J21.0_64}"
 export PYTHON_HOME="${PYTHON_HOME:-/home/haritha/bazelDepTools/python}"
 export COMPILER_PATH="${COMPILER_PATH:-/home/haritha/install_test/usr/lpp/IBM/oelcpp/v3r0/bin/clang}"
@@ -235,7 +249,11 @@ zopen_bazel_make() {
     ZOPEN_ROOTFS="${ZOPEN_ROOTFS:-/data/zopen}"
     # python3 for build actions (build_tar wrappers, genrules). The wrapper
     # sets LIBPATH itself — bazel action spawns don't inherit the server's.
-    export PYTHON_BIN_PATH="${PYTHON_BIN_PATH:-${BAZELPORT_ROOT}/local_repos/python_wrapper/python3}"
+    # Honor a pre-set PYTHON_BIN_PATH only if it actually works (login envs
+    # may carry a stale one); otherwise use the port's LIBPATH-setting wrapper.
+    if [ ! -x "${PYTHON_BIN_PATH:-}" ]; then
+        export PYTHON_BIN_PATH="${BAZELPORT_ROOT}/local_repos/python_wrapper/python3"
+    fi
     export LIBPATH="${PYTHON_HOME}/lib:${LIBPATH:-}"
     # NOTE: altbin MUST come first — the z/OS USS tools in /bin (FSUM) don't
     # support grep -o or find -mindepth, which Stage 1's link_file/embedding
