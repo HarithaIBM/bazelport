@@ -410,6 +410,12 @@ LOCAL_REPOS_DIR="${WORKSPACE_DIR}/../local_repos"
 if [ ! -d "${LOCAL_REPOS_DIR}" ] && [ -d "${WORKSPACE_DIR}/local_repos" ]; then
   LOCAL_REPOS_DIR="${WORKSPACE_DIR}/local_repos"
 fi
+# zopen build may extract the source into a scratch directory where neither
+# relative layout exists — fall back to the port repository's local_repos
+# (absolute path; the WORKSPACE file references the same location).
+if [ ! -d "${LOCAL_REPOS_DIR}" ] && [ -d "/home/haritha/code/bazel-7.2.0/bazelport/local_repos" ]; then
+  LOCAL_REPOS_DIR="/home/haritha/code/bazel-7.2.0/bazelport/local_repos"
+fi
 
 # z/OS: The rules_java_builtin WORKSPACE prefix (loaded into every workspace,
 # including this bootstrap build of Bazel itself) defines a local_repository

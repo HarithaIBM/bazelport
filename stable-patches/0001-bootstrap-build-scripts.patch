@@ -152,10 +152,10 @@ index ca3ce10..bb7be0a 100644
  }
  tempdir
 diff --git a/scripts/bootstrap/compile.sh b/scripts/bootstrap/compile.sh
-index d7e6b9c..a0841b0 100644
+index d7e6b9c..bfdbf92 100644
 --- a/scripts/bootstrap/compile.sh
 +++ b/scripts/bootstrap/compile.sh
-@@ -403,6 +403,30 @@ function build_jni() {
+@@ -403,6 +403,36 @@ function build_jni() {
  
  build_jni "${ARCHIVE_DIR}"
  
@@ -165,6 +165,12 @@ index d7e6b9c..a0841b0 100644
 +LOCAL_REPOS_DIR="${WORKSPACE_DIR}/../local_repos"
 +if [ ! -d "${LOCAL_REPOS_DIR}" ] && [ -d "${WORKSPACE_DIR}/local_repos" ]; then
 +  LOCAL_REPOS_DIR="${WORKSPACE_DIR}/local_repos"
++fi
++# zopen build may extract the source into a scratch directory where neither
++# relative layout exists — fall back to the port repository's local_repos
++# (absolute path; the WORKSPACE file references the same location).
++if [ ! -d "${LOCAL_REPOS_DIR}" ] && [ -d "/home/haritha/code/bazel-7.2.0/bazelport/local_repos" ]; then
++  LOCAL_REPOS_DIR="/home/haritha/code/bazel-7.2.0/bazelport/local_repos"
 +fi
 +
 +# z/OS: The rules_java_builtin WORKSPACE prefix (loaded into every workspace,

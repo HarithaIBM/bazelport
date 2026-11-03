@@ -38,7 +38,7 @@ export ZOPEN_SYSTEM_PREREQ=""
 ###
 
 #export ZOPEN_BOOTSTRAP="skip" ## Bootstrap program to run (defaults to './bootstrap')
-#export ZOPEN_CHECK="skip"     ## Check program to run (defaults to 'make')
+export ZOPEN_CHECK="skip"     ## Check program to run (defaults to 'make' — Bazel has no Makefile; zopen_check_results reports health)
 #export ZOPEN_CONFIGURE="skip" ## Configuration program to run (defaults to './configure')
 #export ZOPEN_INSTALL="skip"   ## Installation program to run (defaults to 'make')
 #export ZOPEN_MAKE="skip"      ## Build program to run (defaults to 'make')
@@ -165,7 +165,10 @@ zopen_build() {
 #export ZOPEN_INSTALL_OPTS="" ## Options to pass to installation program (defaults to 'install')
 #export ZOPEN_MAKE_MINIMAL="" ## Build program will not be passed CFLAGS, LDFLAGS, CPPFLAGS options but will get them from env vars.
 #export ZOPEN_MAKE_OPTS="" ## Options to pass to build program (defaults to '-j')
-#export ZOPEN_PATCH_DIR="" ## Specify directory from which patches should be applied.
+export ZOPEN_PATCH_DIR="stable-patches" ## Directory from which patches should be applied.
+# CRITICAL: zopen build re-extracts the pristine bazel-7.2.0-dist.zip before
+# building; without this, all z/OS source fixes would be clobbered and the
+# build would fail. The 12 numbered patches fully reconstruct the port tree.
 
 
 ###
