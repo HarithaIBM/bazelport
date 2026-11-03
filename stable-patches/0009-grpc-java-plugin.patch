@@ -1,0 +1,152 @@
+diff --git a/third_party/grpc-java/compiler/src/java_plugin/cpp/java_generator.cpp b/third_party/grpc-java/compiler/src/java_plugin/cpp/java_generator.cpp
+old mode 100644
+new mode 100755
+index 3bb56ae..745209c
+--- a/third_party/grpc-java/compiler/src/java_plugin/cpp/java_generator.cpp
++++ b/third_party/grpc-java/compiler/src/java_plugin/cpp/java_generator.cpp
+@@ -157,19 +157,19 @@ static std::string ToAllUpperCase(const std::string& word) {
+ }
+ 
+ static inline std::string LowerMethodName(const MethodDescriptor* method) {
+-  return MixedLower(method->name());
++  return MixedLower(std::string(method->name()));
+ }
+ 
+ static inline std::string MethodPropertiesFieldName(const MethodDescriptor* method) {
+-  return "METHOD_" + ToAllUpperCase(method->name());
++  return "METHOD_" + ToAllUpperCase(std::string(method->name()));
+ }
+ 
+ static inline std::string MethodPropertiesGetterName(const MethodDescriptor* method) {
+-  return MixedLower("get_" + method->name() + "_method");
++  return MixedLower("get_" + std::string(method->name()) + "_method");
+ }
+ 
+ static inline std::string MethodIdFieldName(const MethodDescriptor* method) {
+-  return "METHODID_" + ToAllUpperCase(method->name());
++  return "METHODID_" + ToAllUpperCase(std::string(method->name()));
+ }
+ 
+ static inline std::string MessageFullJavaName(const Descriptor* desc) {
+@@ -382,12 +382,12 @@ static void PrintMethodFields(
+     const ServiceDescriptor* service, std::map<std::string, std::string>* vars,
+     Printer* p, ProtoFlavor flavor) {
+   p->Print("// Static method descriptors that strictly reflect the proto.\n");
+-  (*vars)["service_name"] = service->name();
++  (*vars)["service_name"] = std::string(service->name());
+   for (int i = 0; i < service->method_count(); ++i) {
+     const MethodDescriptor* method = service->method(i);
+     (*vars)["arg_in_id"] = to_string(2 * i);
+     (*vars)["arg_out_id"] = to_string(2 * i + 1);
+-    (*vars)["method_name"] = method->name();
++    (*vars)["method_name"] = std::string(method->name());
+     (*vars)["input_type"] = MessageFullJavaName(method->input_type());
+     (*vars)["output_type"] = MessageFullJavaName(method->output_type());
+     (*vars)["method_field_name"] = MethodPropertiesFieldName(method);
+@@ -455,7 +455,7 @@ static void PrintMethodFields(
+         "            .setResponseMarshaller($ProtoUtils$.marshaller(\n"
+         "                $output_type$.getDefaultInstance()))\n");
+ 
+-    (*vars)["proto_method_descriptor_supplier"] = service->name() + "MethodDescriptorSupplier";
++    (*vars)["proto_method_descriptor_supplier"] = std::string(service->name()) + "MethodDescriptorSupplier";
+     if (flavor == ProtoFlavor::NORMAL) {
+       p->Print(
+           *vars,
+@@ -532,7 +532,7 @@ static void PrintStub(
+     const ServiceDescriptor* service,
+     std::map<std::string, std::string>* vars,
+     Printer* p, StubType type) {
+-  const std::string service_name = service->name();
++  const std::string service_name = std::string(service->name());
+   (*vars)["service_name"] = service_name;
+   (*vars)["abstract_name"] = service_name + "ImplBase";
+   std::string stub_name = service_name;
+@@ -831,7 +831,7 @@ static void PrintMethodHandlerClass(const ServiceDescriptor* service,
+         "private static final int $method_id_name$ = $method_id$;\n");
+   }
+   p->Print("\n");
+-  (*vars)["service_name"] = service->name() + "ImplBase";
++  (*vars)["service_name"] = std::string(service->name()) + "ImplBase";
+   p->Print(
+       *vars,
+       "private static final class MethodHandlers<Req, Resp> implements\n"
+@@ -922,13 +922,13 @@ static void PrintGetServiceDescriptorMethod(const ServiceDescriptor* service,
+                                    std::map<std::string, std::string>* vars,
+                                    Printer* p,
+                                    ProtoFlavor flavor) {
+-  (*vars)["service_name"] = service->name();
++  (*vars)["service_name"] = std::string(service->name());
+ 
+ 
+   if (flavor == ProtoFlavor::NORMAL) {
+-    (*vars)["proto_base_descriptor_supplier"] = service->name() + "BaseDescriptorSupplier";
+-    (*vars)["proto_file_descriptor_supplier"] = service->name() + "FileDescriptorSupplier";
+-    (*vars)["proto_method_descriptor_supplier"] = service->name() + "MethodDescriptorSupplier";
++    (*vars)["proto_base_descriptor_supplier"] = std::string(service->name()) + "BaseDescriptorSupplier";
++    (*vars)["proto_file_descriptor_supplier"] = std::string(service->name()) + "FileDescriptorSupplier";
++    (*vars)["proto_method_descriptor_supplier"] = std::string(service->name()) + "MethodDescriptorSupplier";
+     (*vars)["proto_class_name"] = protobuf::compiler::java::ClassName(service->file());
+     p->Print(
+         *vars,
+@@ -1022,7 +1022,7 @@ static void PrintGetServiceDescriptorMethod(const ServiceDescriptor* service,
+ static void PrintBindServiceMethodBody(const ServiceDescriptor* service,
+                                    std::map<std::string, std::string>* vars,
+                                    Printer* p) {
+-  (*vars)["service_name"] = service->name();
++  (*vars)["service_name"] = std::string(service->name());
+   p->Indent();
+   p->Print(*vars,
+            "return "
+@@ -1078,8 +1078,8 @@ static void PrintService(const ServiceDescriptor* service,
+                          Printer* p,
+                          ProtoFlavor flavor,
+                          bool disable_version) {
+-  (*vars)["service_name"] = service->name();
+-  (*vars)["file_name"] = service->file()->name();
++  (*vars)["service_name"] = std::string(service->name());
++  (*vars)["file_name"] = std::string(service->file()->name());
+   (*vars)["service_class_name"] = ServiceClassName(service);
+   (*vars)["grpc_version"] = "";
+   #ifdef GRPC_VERSION
+@@ -1242,7 +1242,7 @@ std::string ServiceJavaPackage(const FileDescriptor* file) {
+ }
+ 
+ std::string ServiceClassName(const ServiceDescriptor* service) {
+-  return service->name() + "Grpc";
++  return std::string(service->name()) + "Grpc";
+ }
+ 
+ }  // namespace java_grpc_generator
+diff --git a/third_party/grpc-java/compiler/src/java_plugin/cpp/java_plugin.cpp b/third_party/grpc-java/compiler/src/java_plugin/cpp/java_plugin.cpp
+old mode 100644
+new mode 100755
+index 2eed9d2..d93a05a
+--- a/third_party/grpc-java/compiler/src/java_plugin/cpp/java_plugin.cpp
++++ b/third_party/grpc-java/compiler/src/java_plugin/cpp/java_plugin.cpp
+@@ -26,6 +26,8 @@
+ #include <google/protobuf/compiler/plugin.h>
+ #include <google/protobuf/descriptor.h>
+ #include <google/protobuf/io/zero_copy_stream.h>
++// protobuf 31+ Java feature set (required for feature resolution)
++#include <google/protobuf/compiler/java/java_features.pb.h>
+ 
+ namespace protobuf = google::protobuf;
+ 
+@@ -49,6 +51,17 @@ class JavaGrpcGenerator : public protobuf::compiler::CodeGenerator {
+     return FEATURE_PROTO3_OPTIONAL;
+   }
+ 
++  // protobuf 31+: declare the Java feature extension so that the plugin
++  // framework resolves Java features (e.g. nest_in_file_class) in the
++  // descriptor pool instead of leaving them UNKNOWN.
++  std::vector<const protobuf::FieldDescriptor*> GetFeatureExtensions()
++      const override {
++    return {
++        protobuf::DescriptorPool::generated_pool()->FindExtensionByNumber(
++            protobuf::FeatureSet::descriptor(), 1001),
++    };
++  }
++
+   virtual bool Generate(const protobuf::FileDescriptor* file,
+                         const std::string& parameter,
+                         protobuf::compiler::GeneratorContext* context,

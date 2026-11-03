@@ -1,0 +1,484 @@
+diff --git a/src/main/native/BUILD b/src/main/native/BUILD
+old mode 100644
+new mode 100755
+index 31f6b1c..af0b967
+--- a/src/main/native/BUILD
++++ b/src/main/native/BUILD
+@@ -5,6 +5,7 @@ genrule(
+         "//src/conditions:freebsd": ["@bazel_tools//tools/jdk:jni_md_header-freebsd"],
+         "//src/conditions:openbsd": ["@bazel_tools//tools/jdk:jni_md_header-openbsd"],
+         "//src/conditions:windows": ["@bazel_tools//tools/jdk:jni_md_header-windows"],
++        "//src/conditions:zos": ["@bazel_tools//tools/jdk:jni_md_header-zos"],
+         "//conditions:default": ["@bazel_tools//tools/jdk:jni_md_header-linux"],
+     }),
+     outs = ["jni_md.h"],
+@@ -39,6 +40,7 @@ filegroup(
+         ],
+         "//src/conditions:freebsd": ["unix_jni_bsd.cc"],
+         "//src/conditions:openbsd": ["unix_jni_bsd.cc"],
++        "//src/conditions:zos": ["unix_jni_zos.cc"],
+         "//conditions:default": ["unix_jni_linux.cc"],
+     }),
+ )
+diff --git a/src/main/native/unix_jni.cc b/src/main/native/unix_jni.cc
+old mode 100644
+new mode 100755
+index c05d54d..2fc64cb
+--- a/src/main/native/unix_jni.cc
++++ b/src/main/native/unix_jni.cc
+@@ -17,7 +17,11 @@
+ #include <dirent.h>
+ #include <errno.h>
+ #include <fcntl.h>
++#ifndef __MVS__
++// z/OS does not provide ifaddrs.h / getifaddrs(3).
+ #include <ifaddrs.h>
++#define HAVE_IFADDRS 1
++#endif
+ #include <jni.h>
+ #include <limits.h>
+ #include <netdb.h>
+@@ -27,7 +31,10 @@
+ #include <sys/resource.h>
+ #include <sys/socket.h>
+ #include <sys/stat.h>
++#ifndef __MVS__
++// z/OS does not provide sys/syscall.h (not used below).
+ #include <sys/syscall.h>
++#endif
+ #include <sys/time.h>
+ #include <sys/types.h>
+ #include <unistd.h>
+@@ -50,6 +57,58 @@
+ #define PORTABLE_O_DIRECTORY 0
+ #endif
+ 
++#ifdef __MVS__
++// ---- z/OS compatibility for the *at() syscall family ---------------------
++// z/OS USS does not provide dirfd(3), fdopendir(3), openat(2), fstatat(2),
++// fchmodat(2), unlinkat(2) or utimensat(2). All callers in this file keep
++// the directory path (dir_path) alongside the descriptor, so the fallbacks
++// below operate on full paths instead.
++#include <sys/time.h>
++
++#ifndef AT_FDCWD
++#define AT_FDCWD (-100)
++#endif
++#ifndef AT_REMOVEDIR
++#define AT_REMOVEDIR 2
++#endif
++#ifndef AT_SYMLINK_NOFOLLOW
++#define AT_SYMLINK_NOFOLLOW 0x100
++#endif
++#ifndef O_NOFOLLOW
++#define O_NOFOLLOW 0
++#endif
++
++// z/OS DIR* is opaque and cannot be converted to a descriptor; the fallback
++// implementations ignore it.
++#define dirfd(d) (-1)
++
++static inline std::string zos_join(
++    const std::vector<std::string>& dir_path, const char* entry) {
++  std::string result;
++  for (const auto& c : dir_path) {
++    if (!result.empty()) result += '/';
++    result += c;
++  }
++  if (entry != nullptr) {
++    if (!result.empty()) result += '/';
++    result += entry;
++  }
++  return result;
++}
++
++// utimensat is only used with AT_FDCWD in this file.
++static inline int zos_utimensat_cwd(const char* path,
++                                    const struct timespec ts[2], int flags) {
++  struct timeval tv[2];
++  tv[0].tv_sec = ts[0].tv_sec;
++  tv[0].tv_usec = ts[0].tv_nsec / 1000;
++  tv[1].tv_sec = ts[1].tv_sec;
++  tv[1].tv_usec = ts[1].tv_nsec / 1000;
++  return utimes(path, tv);
++}
++#define utimensat(dirfd_, path, ts, flags) zos_utimensat_cwd(path, ts, flags)
++#endif  // __MVS__
++
+ namespace blaze_jni {
+ 
+ struct DIROrError {
+@@ -688,6 +747,23 @@ static jobject NewDirents(JNIEnv *env,
+   return env->NewObject(dirents_class, dirents_ctor, names, types);
+ }
+ 
++#ifdef __MVS__
++// z/OS struct dirent has no d_type member; classify via stat on the full path.
++static char GetDirentType(struct dirent *entry,
++                          int dirfd,
++                          bool follow_symlinks,
++                          const std::string &dirpath) {
++  portable_stat_struct statbuf;
++  std::string full = dirpath + "/" + entry->d_name;
++  if (((follow_symlinks ? portable_stat(full.c_str(), &statbuf)
++                        : portable_lstat(full.c_str(), &statbuf)) == 0)) {
++    if (S_ISREG(statbuf.st_mode)) return 'f';
++    if (S_ISDIR(statbuf.st_mode)) return 'd';
++    if (S_ISLNK(statbuf.st_mode)) return 's';
++  }
++  return '?';
++}
++#else
+ static char GetDirentType(struct dirent *entry,
+                           int dirfd,
+                           bool follow_symlinks) {
+@@ -713,6 +789,7 @@ static char GetDirentType(struct dirent *entry,
+       return '?';
+   }
+ }
++#endif  // __MVS__
+ }  // namespace
+ 
+ /*
+@@ -727,6 +804,9 @@ Java_com_google_devtools_build_lib_unix_NativePosixFiles_readdir(JNIEnv *env,
+                                                     jstring path,
+                                                     jchar read_types) {
+   const char *path_chars = GetStringLatin1Chars(env, path);
++#ifdef __MVS__
++  const std::string path_str(path_chars);
++#endif
+   DIR *dirh;
+   while ((dirh = ::opendir(path_chars)) == nullptr && errno == EINTR) {
+   }
+@@ -766,7 +846,11 @@ Java_com_google_devtools_build_lib_unix_NativePosixFiles_readdir(JNIEnv *env,
+     }
+     entries.push_back(entry->d_name);
+     if (read_types != 'n') {
++#ifdef __MVS__
++      types.push_back(GetDirentType(entry, fd, read_types == 'f', path_str));
++#else
+       types.push_back(GetDirentType(entry, fd, read_types == 'f'));
++#endif
+     }
+   }
+ 
+@@ -920,6 +1004,38 @@ static void PostDeleteTreesBelowException(
+ static DIROrError ForceOpendir(JNIEnv *env,
+                                const std::vector<std::string> &dir_path,
+                                const int dir_fd, const char *entry) {
++#ifdef __MVS__
++  // z/OS: no openat/fdopendir; open by full path instead.
++  const std::string full = zos_join(dir_path, entry);
++  DIR *dir = ::opendir(full.c_str());
++  if (dir == nullptr) {
++    if (errno == ENOENT) {
++      return {nullptr, errno};
++    }
++    if (errno == EACCES) {
++      const std::string parent = zos_join(dir_path, nullptr);
++      if (chmod(parent.c_str(), 0700) == -1 && errno != ENOENT) {
++        PostDeleteTreesBelowException(env, errno, "chmod", dir_path, nullptr);
++        return {nullptr, errno};
++      }
++      if (chmod(full.c_str(), 0700) == -1 && errno != ENOENT) {
++        PostDeleteTreesBelowException(env, errno, "chmod", dir_path, entry);
++        return {nullptr, errno};
++      }
++      dir = ::opendir(full.c_str());
++      if (dir == nullptr) {
++        if (errno != ENOENT) {
++          PostDeleteTreesBelowException(env, errno, "opendir", dir_path, entry);
++        }
++        return {nullptr, errno};
++      }
++    } else {
++      PostDeleteTreesBelowException(env, errno, "opendir", dir_path, entry);
++      return {nullptr, errno};
++    }
++  }
++  return {dir, 0};
++#else
+   static const int flags = O_RDONLY | O_NOFOLLOW | PORTABLE_O_DIRECTORY;
+   int fd = openat(dir_fd, entry, flags);
+   if (fd == -1) {
+@@ -964,6 +1080,7 @@ static DIROrError ForceOpendir(JNIEnv *env,
+     return {nullptr, errno};
+   }
+   return {dir, 0};
++#endif  // __MVS__
+ }
+ 
+ // Tries to delete a file within a directory and, if the first attempt fails,
+@@ -981,6 +1098,32 @@ static DIROrError ForceOpendir(JNIEnv *env,
+ static int ForceDelete(JNIEnv* env, const std::vector<std::string>& dir_path,
+                        const int dir_fd, const char* entry,
+                        const bool is_dir) {
++#ifdef __MVS__
++  // z/OS: no unlinkat; unlink/rmdir by full path.
++  const std::string full = zos_join(dir_path, entry);
++  if ((is_dir ? rmdir(full.c_str()) : unlink(full.c_str())) == -1) {
++    if (errno == ENOENT) {
++      return 0;
++    }
++    const std::string parent = zos_join(dir_path, nullptr);
++    if (chmod(parent.c_str(), 0700) == -1) {
++      if (errno == ENOENT) {
++        return 0;
++      }
++      PostDeleteTreesBelowException(env, errno, "chmod", dir_path, nullptr);
++      return -1;
++    }
++    if ((is_dir ? rmdir(full.c_str()) : unlink(full.c_str())) == -1) {
++      if (errno == ENOENT) {
++        return 0;
++      }
++      PostDeleteTreesBelowException(env, errno, is_dir ? "rmdir" : "unlink",
++                                     dir_path, entry);
++      return -1;
++    }
++  }
++  return 0;
++#else
+   const int flags = is_dir ? AT_REMOVEDIR : 0;
+   if (unlinkat(dir_fd, entry, flags) == -1) {
+     if (errno == ENOENT) {
+@@ -1002,6 +1145,7 @@ static int ForceDelete(JNIEnv* env, const std::vector<std::string>& dir_path,
+     }
+   }
+   return 0;
++#endif  // __MVS__
+ }
+ 
+ // Returns true if the given directory entry represents a subdirectory of dir.
+@@ -1019,6 +1163,21 @@ static int ForceDelete(JNIEnv* env, const std::vector<std::string>& dir_path,
+ // posts an exception.
+ static int IsSubdir(JNIEnv* env, const std::vector<std::string>& dir_path,
+                     const int dir_fd, const struct dirent* de, bool* is_dir) {
++#ifdef __MVS__
++  // z/OS: struct dirent has no d_type and there is no fstatat; classify
++  // with lstat on the full path.
++  struct stat st;
++  const std::string full = zos_join(dir_path, de->d_name);
++  if (lstat(full.c_str(), &st) == -1) {
++    if (errno == ENOENT) {
++      *is_dir = false;
++      return 0;
++    }
++    PostDeleteTreesBelowException(env, errno, "lstat", dir_path, de->d_name);
++    return -1;
++  }
++  *is_dir = S_ISDIR(st.st_mode);
++#else
+   switch (de->d_type) {
+     case DT_DIR:
+       *is_dir = true;
+@@ -1043,6 +1202,8 @@ static int IsSubdir(JNIEnv* env, const std::vector<std::string>& dir_path,
+       *is_dir = false;
+       return 0;
+   }
++#endif  // __MVS__
++  return 0;
+ }
+ 
+ // Recursively deletes all trees under the given path.
+@@ -1609,6 +1770,9 @@ static int convert_ipaddr(struct sockaddr *addr, int family, char *buf,
+   return 0;
+ }
+ 
++#ifndef __MVS__
++// z/OS does not provide getifaddrs(3); the network-interface statistics
++// feature is unavailable (an empty list is returned to the JVM).
+ extern "C" JNIEXPORT void JNICALL
+ Java_com_google_devtools_build_lib_profiler_SystemNetworkStats_getNetIfAddrsNative(
+     JNIEnv *env, jclass clazz, jobject addrs_list) {
+@@ -1684,5 +1848,6 @@ Java_com_google_devtools_build_lib_profiler_SystemNetworkStats_getNetIfAddrsNati
+ 
+   freeifaddrs(ifaddr);
+ }
++#endif  // !__MVS__
+ 
+ }  // namespace blaze_jni
+diff --git a/src/main/native/unix_jni.h b/src/main/native/unix_jni.h
+old mode 100644
+new mode 100755
+index c7a1a73..85dd74b
+--- a/src/main/native/unix_jni.h
++++ b/src/main/native/unix_jni.h
+@@ -25,8 +25,8 @@
+ 
+ namespace blaze_jni {
+ 
+-#if defined(__APPLE__) || defined(__FreeBSD__) || defined(__OpenBSD__)
+-// stat64 is deprecated on OS X/BSD.
++#if defined(__APPLE__) || defined(__FreeBSD__) || defined(__OpenBSD__) || defined(__MVS__)
++// stat64 is deprecated on OS X/BSD; z/OS has only struct stat.
+ typedef struct stat portable_stat_struct;
+ #define portable_stat ::stat
+ #define portable_lstat ::lstat
+diff --git a/src/main/native/unix_jni_zos.cc b/src/main/native/unix_jni_zos.cc
+new file mode 100644
+index 0000000..1323793
+--- /dev/null
++++ b/src/main/native/unix_jni_zos.cc
+@@ -0,0 +1,161 @@
++// Copyright 2026 The Bazel Authors. All rights reserved.
++//
++// Licensed under the Apache License, Version 2.0 (the "License");
++// you may not use this file except in compliance with the License.
++// You may obtain a copy of the License at
++//
++//    http://www.apache.org/licenses/LICENSE-2.0
++//
++// Unless required by applicable law or agreed to in writing, software
++// distributed under the License is distributed on an "AS IS" BASIS,
++// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++// See the License for the specific language governing permissions and
++// limitations under the License.
++
++// z/OS (UNIX System Services) implementation of the portable JNI interface
++// declared in unix_jni.h. Modeled on unix_jni_linux.cc; no fstatat, no xattrs,
++// no power/thermal monitoring on z/OS.
++
++#include <errno.h>
++#include <fcntl.h>
++#include <string.h>
++#include <sys/stat.h>
++#include <unistd.h>
++
++#ifndef AT_FDCWD
++#define AT_FDCWD -100
++#endif
++#ifndef AT_SYMLINK_NOFOLLOW
++#define AT_SYMLINK_NOFOLLOW 0x100
++#endif
++
++#include <string>
++
++#include "src/main/native/unix_jni.h"
++
++namespace blaze_jni {
++
++std::string ErrorMessage(int error_number) {
++  char buf[4096];
++  // z/OS libc provides the SUSv3-conformant strerror_r.
++  if (strerror_r(error_number, buf, sizeof buf) == -1) {
++    return std::string("");
++  } else {
++    return std::string(buf);
++  }
++}
++
++// z/OS does not provide fstatat(2). Fall back to stat()/lstat() when the
++// path is absolute or relative to the current working directory; report
++// ENOSYS otherwise.
++int portable_fstatat(
++    int dirfd, char *name, portable_stat_struct *statbuf, int flags) {
++  if (name != nullptr && name[0] == '/') {
++    if (flags & AT_SYMLINK_NOFOLLOW) {
++      return lstat(name, statbuf);
++    }
++    return stat(name, statbuf);
++  }
++  if (dirfd == AT_FDCWD) {
++    if (flags & AT_SYMLINK_NOFOLLOW) {
++      return lstat(name, statbuf);
++    }
++    return stat(name, statbuf);
++  }
++  errno = ENOSYS;
++  return -1;
++}
++
++int StatSeconds(const portable_stat_struct &statbuf, StatTimes t) {
++  switch (t) {
++    case STAT_ATIME:
++      return statbuf.st_atime;
++    case STAT_CTIME:
++      return statbuf.st_ctime;
++    case STAT_MTIME:
++      return statbuf.st_mtime;
++  }
++  return 0;
++}
++
++// z/OS struct stat does not carry nanosecond resolution.
++int StatNanoSeconds(const portable_stat_struct &statbuf, StatTimes t) {
++  return 0;
++}
++
++// z/OS does not support extended attributes.
++ssize_t portable_getxattr(const char *path, const char *name, void *value,
++                          size_t size, bool *attr_not_found) {
++  *attr_not_found = true;
++  errno = ENOSYS;
++  return -1;
++}
++
++ssize_t portable_lgetxattr(const char *path, const char *name, void *value,
++                           size_t size, bool *attr_not_found) {
++  *attr_not_found = true;
++  errno = ENOSYS;
++  return -1;
++}
++
++int portable_push_disable_sleep() {
++  // Currently not supported.
++  return -1;
++}
++
++int portable_pop_disable_sleep() {
++  // Currently not supported.
++  return -1;
++}
++
++void portable_start_suspend_monitoring() {
++  // Currently not implemented.
++}
++
++void portable_start_thermal_monitoring() {
++  // Currently not implemented.
++}
++
++int portable_thermal_load() {
++  // Currently not implemented.
++  return 0;
++}
++
++void portable_start_system_load_advisory_monitoring() {
++  // Currently not implemented.
++}
++
++int portable_system_load_advisory() {
++  // Currently not implemented.
++  return 0;
++}
++
++void portable_start_memory_pressure_monitoring() {
++  // Currently not implemented.
++}
++
++MemoryPressureLevel portable_memory_pressure() {
++  // Currently not implemented.
++  return MemoryPressureLevelNormal;
++}
++
++void portable_start_disk_space_monitoring() {
++  // Currently not implemented.
++}
++
++void portable_start_cpu_speed_monitoring() {
++  // Currently not implemented.
++}
++
++int portable_cpu_speed() {
++  // Currently not implemented.
++  return -1;
++}
++
++extern "C" JNIEXPORT void JNICALL
++Java_com_google_devtools_build_lib_profiler_SystemNetworkStats_getNetIoCountersNative(
++    JNIEnv *env, jclass clazz, jobject counters_list) {
++  // Currently not implemented.
++}
++
++}  // namespace blaze_jni

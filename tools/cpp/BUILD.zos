@@ -1,0 +1,80 @@
+# z/OS C++ Toolchain BUILD file
+# This becomes the BUILD file for local C++ toolchain on z/OS
+
+load(":zos_cc_toolchain_config.bzl", "zos_cc_toolchain_config")
+load("@rules_cc//cc:defs.bzl", "cc_library", "cc_toolchain", "cc_toolchain_suite")
+
+package(default_visibility = ["//visibility:public"])
+
+# Empty libraries for linking
+cc_library(name = "empty_lib")
+cc_library(name = "malloc")
+
+filegroup(
+    name = "empty",
+    srcs = [],
+)
+
+# All compiler files (for sandboxing)
+filegroup(
+    name = "compiler_files",
+    srcs = [":empty"],
+)
+
+filegroup(
+    name = "linker_files",
+    srcs = [":empty"],
+)
+
+filegroup(
+    name = "ar_files",
+    srcs = [":empty"],
+)
+
+filegroup(
+    name = "all_files",
+    srcs = [":empty"],
+)
+
+# Label flag for extra libraries
+label_flag(
+    name = "link_extra_libs",
+    build_setting_default = ":empty_lib",
+)
+
+cc_library(
+    name = "link_extra_lib",
+    deps = [":link_extra_libs"],
+)
+
+# Toolchain suite
+cc_toolchain_suite(
+    name = "toolchain",
+    toolchains = {
+        "zos|clang": ":cc-compiler-zos",
+        "s390x|clang": ":cc-compiler-zos",
+        "zos": ":cc-compiler-zos",
+        "s390x": ":cc-compiler-zos",
+    },
+)
+
+# z/OS clang toolchain
+cc_toolchain(
+    name = "cc-compiler-zos",
+    all_files = ":all_files",
+    ar_files = ":ar_files",
+    as_files = ":empty",
+    compiler_files = ":compiler_files",
+    dwp_files = ":empty",
+    linker_files = ":linker_files",
+    objcopy_files = ":empty",
+    strip_files = ":empty",
+    supports_param_files = 1,
+    toolchain_config = ":local_zos",
+    toolchain_identifier = "zos-clang-toolchain",
+)
+
+# Toolchain configuration
+zos_cc_toolchain_config(
+    name = "local_zos",
+)

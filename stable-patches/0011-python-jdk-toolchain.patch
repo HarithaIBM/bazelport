@@ -1,0 +1,71 @@
+diff --git a/tools/python/toolchain.bzl b/tools/python/toolchain.bzl
+old mode 100644
+new mode 100755
+index eb5f63f..0868815
+--- a/tools/python/toolchain.bzl
++++ b/tools/python/toolchain.bzl
+@@ -189,7 +189,10 @@ def define_autodetecting_toolchain(
+ 
+     py_runtime(
+         name = "_autodetecting_py3_runtime",
+-        interpreter = ":py3wrapper.sh",
++        # z/OS: use the system Python interpreter directly instead of the
++        # py3wrapper.sh script, which z/OS /bin/sh cannot read (untagged
++        # ASCII generated files are read as EBCDIC by z/OS shells).
++        interpreter_path = "/home/opnzos/local/install/bin/python3.8",
+         python_version = "PY3",
+         stub_shebang = "#!/usr/bin/env python3",
+         visibility = ["//visibility:private"],
+diff --git a/tools/python/utils.bzl b/tools/python/utils.bzl
+old mode 100644
+new mode 100755
+index 7422608..51d9893
+--- a/tools/python/utils.bzl
++++ b/tools/python/utils.bzl
+@@ -27,14 +27,25 @@ def _expand_pyversion_template_impl(ctx):
+         (ctx.outputs.out3_nonstrict, "3", "0"),
+     ]:
+         if output:
+-            ctx.actions.expand_template(
+-                template = ctx.file.template,
++            # z/OS: expand_template writes untagged output; the shell then
++            # reads it as EBCDIC. Generate a tagged copy via a shell action.
++            tagged_output = ctx.actions.declare_file(
++                output.basename + ".tagged")
++            ctx.actions.run_shell(
++                outputs = [tagged_output],
++                inputs = [ctx.file.template],
++                command = (
++                    "sed -e 's/%VERSION%/" + version + "/' " +
++                    "-e 's/%STRICT%/" + strict + "/' " +
++                    "< " + ctx.file.template.path +
++                    " > " + tagged_output.path +
++                    " && chmod +x " + tagged_output.path +
++                    " && chtag -tc ISO8859-1 " + tagged_output.path
++                ),
++            )
++            ctx.actions.symlink(
+                 output = output,
+-                substitutions = {
+-                    "%VERSION%": version,
+-                    "%STRICT%": strict,
+-                },
+-                is_executable = True,
++                target_file = tagged_output,
+             )
+ 
+ expand_pyversion_template = rule(
+diff --git a/tools/jdk/BUILD.tools b/tools/jdk/BUILD.tools
+old mode 100644
+new mode 100755
+index cfc1bc0..bef9b53
+--- a/tools/jdk/BUILD.tools
++++ b/tools/jdk/BUILD.tools
+@@ -160,6 +160,7 @@ TARGET_NAMES = [
+     "jni_md_header-linux",
+     "jni_md_header-openbsd",
+     "jni_md_header-windows",
++    "jni_md_header-zos",
+     "platformclasspath",
+     "remote_jdk11",
+     "remotejdk_17",

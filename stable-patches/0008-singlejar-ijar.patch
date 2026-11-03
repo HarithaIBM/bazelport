@@ -1,0 +1,163 @@
+diff --git a/src/tools/singlejar/diag.h b/src/tools/singlejar/diag.h
+old mode 100644
+new mode 100755
+index ee0793a..aa22ccc
+--- a/src/tools/singlejar/diag.h
++++ b/src/tools/singlejar/diag.h
+@@ -28,6 +28,28 @@
+ #define diag_warn(...) warn(__VA_ARGS__)
+ #define diag_warnx(...) warnx(__VA_ARGS__)
+ 
++#elif defined(__MVS__)
++
++// z/OS USS does not provide err.h; minimal equivalents of the BSD err(3) family.
++#include <errno.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#define diag_err(exit_value, fmt, ...)                                       \
++  {                                                                           \
++    fprintf(stderr, "ERROR: " fmt ": %s\n", ##__VA_ARGS__, strerror(errno)); \
++    exit(exit_value);                                                         \
++  }
++#define diag_errx(exit_value, fmt, ...)                    \
++  {                                                        \
++    fprintf(stderr, "ERROR: " fmt "\n", ##__VA_ARGS__);   \
++    exit(exit_value);                                      \
++  }
++#define diag_warn(fmt, ...) \
++  fprintf(stderr, "WARNING: " fmt ": %s\n", ##__VA_ARGS__, strerror(errno))
++#define diag_warnx(fmt, ...) \
++  fprintf(stderr, "WARNING: " fmt "\n", ##__VA_ARGS__)
++
+ #elif defined(_WIN32)
+ 
+ #ifndef WIN32_LEAN_AND_MEAN
+diff --git a/src/tools/singlejar/mapped_file_posix.inc b/src/tools/singlejar/mapped_file_posix.inc
+old mode 100644
+new mode 100755
+index d59de00..7427d2f
+--- a/src/tools/singlejar/mapped_file_posix.inc
++++ b/src/tools/singlejar/mapped_file_posix.inc
+@@ -26,7 +26,7 @@
+ 
+ // The implementation is specific to 64-bit Linux / OS X / BSD.
+ #if !((defined(__linux__) || defined(__APPLE__) || defined(__FreeBSD__) || \
+-       defined(__OpenBSD__)) &&                                            \
++       defined(__OpenBSD__) || defined(__MVS__)) &&                     \
+       __SIZEOF_POINTER__ == 8)
+ #error This code for 64 bit Unix.
+ #endif
+diff --git a/src/tools/singlejar/options.cc b/src/tools/singlejar/options.cc
+old mode 100644
+new mode 100755
+index 2728af3..84fae4c
+--- a/src/tools/singlejar/options.cc
++++ b/src/tools/singlejar/options.cc
+@@ -23,7 +23,16 @@ void Options::ParseCommandLine(int argc, const char *const argv[]) {
+     if (ParseToken(&tokens)) {
+       continue;
+     } else {
+-      diag_errx(1, "Bad command line argument %s", tokens.token().c_str());
++      // z/OS: Skip unknown arguments (e.g. --native_header_output,
++      // --output_manifest_proto) that are passed by the java_binary rule
++      // but not supported by this singlejar build. Also skip the argument's
++      // value if the next token doesn't start with '--'.
++      diag_warn("Skipping unknown argument: %s", tokens.token().c_str());
++      tokens.next();
++      // If the next token is a value (not a --flag), skip it too
++      if (!tokens.AtEnd() && tokens.token().c_str()[0] != '-') {
++        tokens.next();
++      }
+     }
+   }
+ 
+diff --git a/src/tools/singlejar/output_jar.cc b/src/tools/singlejar/output_jar.cc
+old mode 100644
+new mode 100755
+index d6b9785..7c41f79
+--- a/src/tools/singlejar/output_jar.cc
++++ b/src/tools/singlejar/output_jar.cc
+@@ -313,6 +313,9 @@ bool OutputJar::Open() {
+   int fd = _open_osfhandle(reinterpret_cast<intptr_t>(hFile), mode);
+ #else
+   // Set execute bits since we may produce an executable output file.
++#ifdef O_BINARY
++  mode |= O_BINARY;  // z/OS: tag output as binary, not text
++#endif
+   int fd = open(path(), mode, 0777);
+ #endif
+ 
+diff --git a/src/tools/singlejar/token_stream.h b/src/tools/singlejar/token_stream.h
+old mode 100644
+new mode 100755
+index 0181bbf..4d334b9
+--- a/src/tools/singlejar/token_stream.h
++++ b/src/tools/singlejar/token_stream.h
+@@ -68,7 +68,9 @@ class ArgTokenStream {
+       }
+       fp_ = _wfopen(wpath.c_str(), L"r");
+ #else
+-      fp_ = fopen(filename, "r");
++      // z/OS: Open in binary mode to read raw ASCII bytes. Text mode ("r")
++      // causes EBCDIC conversion of untagged files, garbling the arguments.
++      fp_ = fopen(filename, "rb");
+ #endif
+ 
+       if (!fp_) {
+diff --git a/src/tools/singlejar/zip_headers.h b/src/tools/singlejar/zip_headers.h
+old mode 100644
+new mode 100755
+index ca0e23c..b009b10
+--- a/src/tools/singlejar/zip_headers.h
++++ b/src/tools/singlejar/zip_headers.h
+@@ -29,6 +29,15 @@
+ #include <endian.h>
+ #elif defined(__FreeBSD__) || defined(__OpenBSD__)
+ #include <sys/endian.h>
++#elif defined(__MVS__)
++// z/OS s390x is big-endian and does not provide <endian.h>; the Zip format
++// is little-endian, so the converters are byte swaps.
++#define le16toh(x) __builtin_bswap16(x)
++#define le32toh(x) __builtin_bswap32(x)
++#define le64toh(x) __builtin_bswap64(x)
++#define htole16(x) __builtin_bswap16(x)
++#define htole32(x) __builtin_bswap32(x)
++#define htole64(x) __builtin_bswap64(x)
+ #elif defined(__APPLE__) || defined(_WIN32)
+ // Hopefully OSX and Windows will keep running solely on little endian CPUs, so:
+ #define le16toh(x) (x)
+diff --git a/third_party/ijar/mapped_file_unix.cc b/third_party/ijar/mapped_file_unix.cc
+old mode 100644
+new mode 100755
+index 65179e3..c7ef2ae
+--- a/third_party/ijar/mapped_file_unix.cc
++++ b/third_party/ijar/mapped_file_unix.cc
+@@ -95,7 +95,11 @@ MappedOutputFile::MappedOutputFile(const char* name, size_t estimated_size)
+     : estimated_size_(estimated_size) {
+   impl_ = NULL;
+   opened_ = false;
+-  int fd = open(name, O_CREAT|O_RDWR|O_TRUNC, 0644);
++  int fd = open(name, O_CREAT|O_RDWR|O_TRUNC
++#ifdef O_BINARY
++      | O_BINARY  // z/OS: tag output as binary, not text
++#endif
++      , 0644);
+   if (fd < 0) {
+     snprintf(errmsg, MAX_ERROR, "open(): %s", strerror(errno));
+     errmsg_ = errmsg;
+diff --git a/third_party/ijar/platform_utils.cc b/third_party/ijar/platform_utils.cc
+old mode 100644
+new mode 100755
+index 97d0023..0214d8e
+--- a/third_party/ijar/platform_utils.cc
++++ b/third_party/ijar/platform_utils.cc
+@@ -91,7 +91,7 @@ bool stat_file(const char* path, Stat* result) {
+   }
+   result->total_size = statst.st_size;
+   result->file_mode = statst.st_mode;
+-  result->is_directory = (statst.st_mode & S_IFDIR) != 0;
++  result->is_directory = S_ISDIR(statst.st_mode);
+   return true;
+ #endif  // defined(_WIN32) || defined(__CYGWIN__)
+ }

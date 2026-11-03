@@ -150,6 +150,16 @@ filegroup(
     visibility = ["//:__subpackages__"],
 )
 
+# z/OS: Pre-generated proto source files (exposed as a filegroup for java_library srcs)
+filegroup(
+    name = "pre_generated_protos",
+    srcs = glob(
+        ["derived/src/java/**/*.java"],
+        allow_empty = True,
+    ),
+    visibility = ["//visibility:public"],
+)
+
 # Additional generated files that are not Java sources (which could otherwise
 # be included in //src:derived_java_sources).
 filegroup(
@@ -314,3 +324,13 @@ REMOTE_PLATFORMS = ("rbe_ubuntu2004",)
     )
     for platform_name in REMOTE_PLATFORMS
 ]
+
+# z/OS: File group of pre-generated proto source files (for dist_jars).
+filegroup(
+    name = "pre_generated_proto_files",
+    srcs = glob(
+        ["derived/src/java/**/*.java"],
+        allow_empty = True,
+    ),
+    visibility = ["//visibility:public"],
+)

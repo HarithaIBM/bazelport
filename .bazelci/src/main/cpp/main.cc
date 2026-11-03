@@ -21,7 +21,18 @@
 #include "src/main/cpp/startup_options.h"
 #include "src/main/cpp/workspace_layout.h"
 
+#ifdef __MVS__
+// z/OS: The zopen gRPC 1.73 static libraries require an explicit grpc_init()
+// before any gRPC use. Without it, the first completion-queue creation inside
+// grpc_completion_queue_create_internal crashes with a protection exception
+// (0C4) — lazy core initialization does not work correctly on z/OS.
+extern "C" void grpc_init(void);
+#endif
+
 int main(int argc, char **argv) {
+#ifdef __MVS__
+  grpc_init();
+#endif
   uint64_t start_time = blaze::GetMillisecondsMonotonic();
   std::unique_ptr<blaze::WorkspaceLayout> workspace_layout(
       new blaze::WorkspaceLayout());

@@ -15,15 +15,8 @@
 export ZOPEN_BUILD_LINE="STABLE"
 
 ## Required IF ZOPEN_BUILD_LINE='STABLE'
-# Download from official GitHub
-export ZOPEN_STABLE_URL="https://github.com/bazelbuild/bazel/releases/download/7.2.0/bazel-7.2.0-dist.zip"
-export ZOPEN_STABLE_DEPS="check_java check_python zip unzip bash git"
-
-# Extract files INTO .bazelci directory (requires patched zopen-build)
-export ZOPEN_EXTRACT_DIR=".bazelci"
-
-# Set project name for packaging (since directory will be .bazelci)
-export ZOPEN_PROJECT_NAME="bazel"
+export ZOPEN_STABLE_URL="https://github.com/bazelbuild/bazel/releases/download/7.2.0/bazel-7.2.0-dist.zip"  # Specify the stable build URL (either git or tarball)
+export ZOPEN_STABLE_DEPS="check_java check_python zip unzip bash" # Specify the stable build dependencies.
 
 ## Required IF ZOPEN_BUILD_LINE='DEV'
 export ZOPEN_DEV_URL="https://github.com/bazelbuild/bazel.git"   # Specify the dev build URL
@@ -81,69 +74,8 @@ zopen_configure() {
 }
 
 zopen_build() {
-  echo "[zopen_build] Starting Bazel bootstrap compilation..." >&2
-  
-  cd .bazelci || {
-    echo "[zopen_build] ERROR: .bazelci directory not found" >&2
-    return 1
-  }
-  
-  # Create output directory for artifacts
-  mkdir -p ../output
-  
-  # ONLY do bootstrap compilation, NOT Bazel-on-Bazel rebuild
-  # This avoids the IBM J9 GC runtime issues in the second stage
-  echo "[zopen_build] Running bootstrap compilation (stage 1 only)..." >&2
-  
-  bash -c '
-    set -e
-    
-    # Critical: unset this variable or compilation will be skipped!
-    unset BAZEL_SKIP_JAVA_COMPILATION
-    
-    echo "[bootstrap] Sourcing buildenv.sh..." >&2
-    source scripts/bootstrap/buildenv.sh
-    
-    echo "[bootstrap] OUTPUT_DIR=${OUTPUT_DIR}" >&2
-    
-    echo "[bootstrap] Sourcing compile.sh..." >&2
-    source scripts/bootstrap/compile.sh
-    
-    # libblaze.jar is in OUTPUT_DIR/archive/ after compilation
-    ARCHIVE_DIR="${OUTPUT_DIR}/archive"
-    
-    # Copy libblaze.jar if it was created
-    if [ -f "${ARCHIVE_DIR}/libblaze.jar" ]; then
-      echo "[bootstrap] SUCCESS! Copying libblaze.jar..." >&2
-      cp "${ARCHIVE_DIR}/libblaze.jar" ../output/libblaze.jar
-      ls -lh ../output/libblaze.jar >&2
-    elif [ -f "${OUTPUT_DIR}/libblaze.jar" ]; then
-      echo "[bootstrap] Found libblaze.jar in OUTPUT_DIR (fallback)" >&2
-      cp "${OUTPUT_DIR}/libblaze.jar" ../output/libblaze.jar
-      ls -lh ../output/libblaze.jar >&2
-    else
-      echo "[bootstrap] ERROR: libblaze.jar not found in ${ARCHIVE_DIR} or ${OUTPUT_DIR}" >&2
-      exit 1
-    fi
-    
-    # Also copy the bazel wrapper script if it exists
-    if [ -f "${ARCHIVE_DIR}/bazel" ]; then
-      cp "${ARCHIVE_DIR}/bazel" ../output/bazel
-      chmod +x ../output/bazel
-      echo "[bootstrap] Copied bazel wrapper" >&2
-    fi
-  '
-  
-  local rc=$?
-  cd ..
-  
-  if [ $rc -eq 0 ]; then
-    echo "[zopen_build] Bootstrap completed successfully!" >&2
-  else
-    echo "[zopen_build] Bootstrap failed with rc=$rc" >&2
-  fi
-  
-  return $rc
+  echo "Triggering Bazel's custom compile script..."
+  env bash compile.sh
 }
 
 ###
@@ -180,116 +112,9 @@ zopen_build() {
   ## is built.
 #}
 
-zopen_init(){
-  # Apply z/OS specific patches for protobuf compatibility
-  echo "Setting up z/OS build configuration..." >&2
-  
-  # Set UTF-8 locale for build
-  export LC_ALL=C.UTF-8 2>/dev/null || export LC_ALL=C
-  export LANG=C.UTF-8 2>/dev/null || export LANG=C
-  
-  # Set Java encoding to UTF-8
-  export JAVA_TOOL_OPTIONS="-Dfile.encoding=UTF-8 ${JAVA_TOOL_OPTIONS:-}"
-  
-  # Suppress IFA processor warning
-  export _JVM_OPTIONS="-Xnoifa ${_JVM_OPTIONS:-}"
-  
-  # Add z/OS configuration to Bazel args
-  export EXTRA_BAZEL_ARGS="${EXTRA_BAZEL_ARGS:-} --config=zos"
-  
-  echo "[zopen_init] Using unzip from PATH: $(which unzip)" >&2
-  echo "[zopen_init] Locale: ${LC_ALL}" >&2
-  echo "[zopen_init] Java encoding: UTF-8" >&2
-  echo "Using EXTRA_BAZEL_ARGS: $EXTRA_BAZEL_ARGS" >&2
-}
-
-zopen_post_buildenv(){
+#zopen_post_buildenv(){
   ## This function runs after the 'buildenv' is processed.
-  echo "[zopen_post_buildenv] Using system unzip: $(which unzip)" >&2
-}
-
-zopen_unpack_zip(){
-  ## Custom unpack for zip files - use -o to overwrite without prompting
-  local zipfile="$1"
-  local targetdir="$2"
-  
-  echo "[zopen_unpack_zip] Extracting $zipfile to $targetdir" >&2
-  mkdir -p "$targetdir" || return 1
-  cd "$targetdir" || return 1
-  
-  # Use -o flag to overwrite without prompting
-  unzip -o -q "../$zipfile" || {
-    echo "[zopen_unpack_zip] ERROR: unzip failed" >&2
-    return 1
-  }
-  
-  echo "[zopen_unpack_zip] Extraction complete" >&2
-  return 0
-}
-
-zopen_post_extract(){
-  ## This function runs after the source tarball is extracted.
-  ## With ZOPEN_EXTRACT_DIR set, files are already in .bazelci directory!
-  local sourcedir="$1"
-  
-  echo "[zopen_post_extract] sourcedir: ${sourcedir}" >&2
-  echo "[zopen_post_extract] pwd: $(pwd)" >&2
-  
-  # DON'T cd here - let extractTarBall handle it!
-  # cd "${sourcedir}" || return 1
-  
-  echo "[zopen_post_extract] Files in directory: $(ls -1 ${sourcedir} 2>/dev/null | wc -l)" >&2
-  
-  # Normalize file permissions BEFORE git commit
-  # Git patches expect specific file modes
-  echo "[zopen_post_extract] Normalizing file permissions..." >&2
-  if [ -f "${sourcedir}/tools/cpp/unix_cc_configure.bzl" ]; then
-    chmod 644 "${sourcedir}/tools/cpp/unix_cc_configure.bzl" 2>/dev/null || true
-  fi
-  
-  # Comprehensive file tagging for z/OS
-  echo "[zopen_post_extract] Applying z/OS file tags..." >&2
-  
-  # Tag ALL shell scripts as ASCII (critical for bootstrap)
-  find "${sourcedir}" -name "*.sh" -exec chtag -tc ISO8859-1 {} \; 2>/dev/null || true
-  
-  # Tag Java source files as UTF-8
-  find "${sourcedir}" -name "*.java" -exec chtag -tc UTF-8 {} \; 2>/dev/null || true
-  
-  # Tag Python scripts as UTF-8
-  find "${sourcedir}" -name "*.py" -exec chtag -tc UTF-8 {} \; 2>/dev/null || true
-  
-  # Tag binary files
-  if [ -d "${sourcedir}/derived" ]; then
-    echo "[zopen_post_extract] Tagging binary files in derived/..." >&2
-    find "${sourcedir}/derived" \( -name "*.jar" -o -name "*.class" -o -name "*.so" -o -name "*.a" \) \
-      -exec chtag -b {} \; 2>/dev/null || true
-  fi
-  
-  # Tag all .jar and .class files as binary
-  find "${sourcedir}" -type f \( -name "*.jar" -o -name "*.class" \) \
-    -exec chtag -b {} \; 2>/dev/null || true
-  
-  # Ensure bootstrap scripts are executable and properly tagged
-  if [ -f "${sourcedir}/scripts/bootstrap/buildenv.sh" ]; then
-    echo "[zopen_post_extract] Setting up bootstrap scripts..." >&2
-    chmod +x "${sourcedir}/scripts/bootstrap/buildenv.sh"
-    chmod +x "${sourcedir}/scripts/bootstrap/compile.sh"
-    chtag -tc ISO8859-1 "${sourcedir}/scripts/bootstrap/buildenv.sh"
-    chtag -tc ISO8859-1 "${sourcedir}/scripts/bootstrap/compile.sh"
-  fi
-  
-  # Tag compile.sh if it exists at root
-  if [ -f "${sourcedir}/compile.sh" ]; then
-    chmod +x "${sourcedir}/compile.sh"
-    chtag -tc ISO8859-1 "${sourcedir}/compile.sh"
-  fi
-  
-  echo "[zopen_post_extract] File tagging completed" >&2
-  return 0
-}
-
-
+#}
 
 #zopen_pre_build(){
   ## This function runs before the 'make' step of the build is run.
@@ -326,7 +151,7 @@ zopen_post_extract(){
 
 #export ZOPEN_EXTRA_CFLAGS="" ## C compiler flags to append to CFLAGS (defaults to '').
 #export ZOPEN_EXTRA_CPPFLAGS="" ## C,C++ pre-processor flags to append to CPPFLAGS (defaults to '')
-export ZOPEN_EXTRA_CXXFLAGS="-DPROTOBUF_USE_DLLS=0" ## C++ compiler flags to append to CXXFLAGS (defaults to '')
+#export ZOPEN_EXTRA_CXXFLAGS="" ## C++ compiler flags to append to CXXFLAGS (defaults to '')
 #export ZOPEN_EXTRA_LDFLAGS="" ## C,C++ linker flags to append to LDFLAGS (defaults to '')
 #export ZOPEN_EXTRA_LIBS="" ## C,C++ libraries to append to LIBS (defaults to '')
 #export ZOPEN_BOOTSTRAP_OPTS="" ## Options to pass to bootstrap program (defaults to '')
@@ -367,163 +192,95 @@ export ZOPEN_CONFIGURE="skip"
 export ZOPEN_MAKE="zopen_bazel_make"
 export ZOPEN_INSTALL="zopen_bazel_install"
 
-# Custom compile step for Bazel (Zip Bomb Fix)
+# ============================================================================
+# Full Bazel build: Stage 1 (bootstrap) + Stage 2 (Bazel builds itself).
+#
+# The bootstrap jar (output/libblaze.jar) is an INTERMEDIATE artifact only.
+# The final product of this port is output/bazel — the Stage 2 binary built
+# by the bootstrap Bazel driving the real Bazel build (src:bazel_nojdk).
+#
+# This function mirrors the verified run_stage2.sh flow.
+# ============================================================================
 zopen_bazel_make() {
-###echo "==== BEFORE compile.sh ====="
-# Use ZOPEN_ROOTFS if set, otherwise fallback to /data/zopen
-ZOPEN_BASE="${ZOPEN_ROOTFS:-/data/zopen}"
-export PATH=${ZOPEN_BASE}/usr/local/altbin:${ZOPEN_BASE}/usr/local/bin:$PATH
+    echo "==== Bazel Full Build (Stage 1 + Stage 2) ===="
 
-# Set UTF-8 encoding for Java compilation
-export LC_ALL=C.UTF-8 2>/dev/null || export LC_ALL=C
-export JAVA_TOOL_OPTIONS="-Dfile.encoding=UTF-8 ${JAVA_TOOL_OPTIONS:-}"
-
-# z/OS: Explicitly specify annotation processors to avoid auto-discovery
-# Auto-discovery triggers module resolution for checker-qual and errorprone-annotations
-# We only need AutoValue processors for code generation
-export BAZEL_JAVAC_OPTS="-processor com.google.auto.value.processor.AutoValueProcessor,com.google.auto.value.processor.AutoOneOfProcessor -J-Xmx4g -J-Xms2g"
-# Disabled annotation processors as they cause javac to hang on z/OS
-# export BAZEL_JAVAC_OPTS="-processor \
-# com.google.auto.value.processor.AutoValueProcessor,\
-# com.google.auto.value.processor.AutoOneOfProcessor,\
-# com.google.auto.service.processor.AutoServiceProcessor"
-hash -r
-
-export EXTRA_BAZEL_ARGS="\
---tool_java_runtime_version=local_jdk \
---java_runtime_version=local_jdk \
---tool_java_language_version=21 \
---java_language_version=21 "
-#export EXTRA_BAZEL_ARGS="--tool_java_runtime_version=local_jdk"
-##echo "PATH=$PATH"
-##which grep
-##type grep
-##grep --version
-##echo "PATH=$PATH"
-##which grep
-##type grep
-##grep --version || true
-
-#echo "============================="    # If zopen trapped us in the .bazelci subfolder, step out to the real root
+    # If zopen trapped us in the .bazelci subfolder, step out to the real root
     if [ ! -f "compile.sh" ] && [ -f "../compile.sh" ]; then
         cd ..
     fi
-    
-    echo "Running Bazel compile.sh in $(pwd)..."
-    ZOPEN_BASE="${ZOPEN_ROOTFS:-/data/zopen}"
-    export PATH=${ZOPEN_BASE}/usr/local/bin:$PATH
-    
-    # Check if derived directory exists (required for dist archive)
-    if [ ! -d "derived" ]; then
-        echo "ERROR: 'derived' directory not found - this may not be a proper dist archive extraction" >&2
-        echo "Current directory: $(pwd)" >&2
-        echo "Contents: $(ls -la | head -20)" >&2
-        return 1
+
+    # --- toolchain environment (verified in run_stage2.sh) ---
+    export JAVA_HOME=${JAVA_HOME:-/home/haritha/dhjava/J21.0_64}
+    # python3 for build actions (build_tar wrappers, genrules); needs LIBPATH
+    export PYTHON_BIN_PATH=${PYTHON_BIN_PATH:-/home/haritha/bazelDepTools/python/bin/python3}
+    export LIBPATH="/home/haritha/bazelDepTools/python/lib:${LIBPATH:-}"
+    # zopen rootfs: honor ZOPEN_ROOTFS, else known-good local locations
+    if [ -z "${ZOPEN_ROOTFS:-}" ]; then
+        for d in /data/zopen /home/haritha/zopen_23may/zopen; do
+            [ -d "$d/usr/local/bin" ] && ZOPEN_ROOTFS="$d" && break
+        done
     fi
-    
+    ZOPEN_ROOTFS="${ZOPEN_ROOTFS:-/data/zopen}"
+    export PATH="${JAVA_HOME}/bin:$(dirname "$PYTHON_BIN_PATH"):${ZOPEN_ROOTFS}/usr/local/bin:/home/haritha/install_test/usr/lpp/IBM/oelcpp/v3r0/bin:$(pwd)/local_repos/zos_cc_tools:$PATH"
+    export CC=${CC:-clang}
+    export CXX=${CXX:-clang++}
+    # z/OS: identify the libc to the auto-configured cc toolchain
+    export BAZEL_TARGET_LIBC=zos
+    export LC_ALL=${LC_ALL:-C.UTF-8}
+    # z/OS: Tag generated scripts for exec() but don't corrupt binary file reads
+    export _TAG_REDIR_IN=txt=ISO8859-1
+    export _TAG_REDIR_OUT=bin
+    unset _TAG_REDIR_ALL
+    export JAVA_TOOL_OPTIONS="-Dfile.encoding=UTF-8 ${JAVA_TOOL_OPTIONS:-}"
+    # Explicit annotation processors (discovery is unreliable on z/OS javac)
+    export BAZEL_JAVAC_OPTS="-processor com.google.auto.value.processor.AutoValueProcessor,com.google.auto.value.processor.AutoOneOfProcessor -J-Xmx4g -J-Xms2g"
+    export EXTRA_BAZEL_ARGS="--tool_java_runtime_version=local_jdk --java_runtime_version=local_jdk --spawn_strategy=standalone --features=no_dotd_file --cxxopt=-std=c++17 --host_cxxopt=-std=c++17 --@rules_jvm_external//settings:stamp_manifest=False"
+    export VERBOSE=${VERBOSE:-no}
+
+    # CRITICAL: normal mode for Stage 2 (full WORKSPACE machinery).
+    # Never leave ZOS_BOOTSTRAP_MODE set here — that would stop at the
+    # bootstrap jar and treat Stage 1 as the final product.
+    unset ZOS_BOOTSTRAP_MODE
+
     hash -r
+    chmod +x compile.sh
 
-    # z/OS: ONLY run bootstrap (stage 1), NOT Bazel-on-Bazel (stage 2)
-    # Stage 2 crashes with IBM J9 GC runtime issues
-    # Critical: unset BAZEL_SKIP_JAVA_COMPILATION or compilation will be skipped!
-    unset BAZEL_SKIP_JAVA_COMPILATION
-
-    echo "[zopen] Running bootstrap compilation (stage 1 only)..." >&2
-    
-    bash -c '
-      set -e
-      unset BAZEL_SKIP_JAVA_COMPILATION
-      
-      echo "[bootstrap] Sourcing buildenv.sh..." >&2
-      source scripts/bootstrap/buildenv.sh
-      
-      echo "[bootstrap] OUTPUT_DIR=${OUTPUT_DIR}" >&2
-      
-      echo "[bootstrap] Sourcing compile.sh..." >&2
-      source scripts/bootstrap/compile.sh
-      
-      # libblaze.jar is created in OUTPUT_DIR/archive/
-      ARCHIVE_DIR="${OUTPUT_DIR}/archive"
-      
-      # Create local output directory and copy artifacts
-      mkdir -p "$(pwd)/output"
-      
-      if [ -f "${ARCHIVE_DIR}/libblaze.jar" ]; then
-        echo "[bootstrap] SUCCESS! Copying libblaze.jar..." >&2
-        cp "${ARCHIVE_DIR}/libblaze.jar" "$(pwd)/output/libblaze.jar"
-        ls -lh "$(pwd)/output/libblaze.jar" >&2
-      elif [ -f "${OUTPUT_DIR}/libblaze.jar" ]; then
-        echo "[bootstrap] Found in OUTPUT_DIR (fallback)" >&2
-        cp "${OUTPUT_DIR}/libblaze.jar" "$(pwd)/output/libblaze.jar"
-        ls -lh "$(pwd)/output/libblaze.jar" >&2
-      else
-        echo "[bootstrap] ERROR: libblaze.jar not found" >&2
-        exit 1
-      fi
-      
-      # Create a simple wrapper script as "bazel"
-      cat > "$(pwd)/output/bazel" << "EOFWRAPPER"
-#!/bin/bash
-# Bootstrap Bazel wrapper for z/OS
-JAR_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-exec "${JAVA_HOME}/bin/java" -jar "${JAR_DIR}/libblaze.jar" "$@"
-EOFWRAPPER
-      chmod +x "$(pwd)/output/bazel"
-      echo "[bootstrap] Created bazel wrapper script" >&2
-    '
-    
+    echo "Running FULL Bazel compile.sh in $(pwd)..."
+    bash ./compile.sh
     rc=$?
     if [ $rc -ne 0 ]; then
-        echo "ERROR: Bootstrap compilation failed with exit code $rc" >&2
+        echo "ERROR: compile.sh failed with exit code $rc" >&2
         return $rc
     fi
 
-    # Verify output/libblaze.jar was created
-    if [ ! -f "output/libblaze.jar" ]; then
-        echo "ERROR: output/libblaze.jar was not created" >&2
+    # Final artifact check: must be the Stage 2 binary, NOT the bootstrap jar.
+    if [ ! -f "output/bazel" ]; then
+        echo "ERROR: output/bazel (Stage 2 binary) was not created — build did not complete Stage 2" >&2
         return 1
     fi
-
-    echo "Bazel bootstrap successfully built at output/libblaze.jar"
+    if [ ! -s "output/bazel" ]; then
+        echo "ERROR: output/bazel is empty" >&2
+        return 1
+    fi
+    echo "Stage 2 complete: output/bazel ($(ls -l output/bazel | awk '{print $5}') bytes)"
     return 0
 }
 
-# Custom install step (Zip Bomb Fix)
+# Custom install step: install the Stage 2 binary
 zopen_bazel_install() {
     # Step out to the real root if needed
     if [ ! -d "output" ] && [ -d "../output" ]; then
         cd ..
     fi
-    
-    echo "Installing Bazel from $(pwd)..."
+
+    # Refuse to install unless the Stage 2 binary exists — the bootstrap
+    # jar (output/libblaze.jar) is never a valid install artifact.
+    if [ ! -f "output/bazel" ]; then
+        echo "ERROR: output/bazel not found — refusing to install (bootstrap-only builds are not final)" >&2
+        return 1
+    fi
+
+    echo "Installing Bazel (Stage 2 binary) from $(pwd)..."
     mkdir -p "${ZOPEN_INSTALL_DIR}/bin"
     cp output/bazel "${ZOPEN_INSTALL_DIR}/bin/"
 }
-
-zopen_get_tarball_dirname() {
-  # Bazel dist zip extracts to current directory, not a subdirectory
-  # We need to create a directory and extract into it
-  echo "bazel-7.2.0"
-}
-
-zopen_unpack_zip() {
-  local tarball="$1"
-  local targetdir="$2"
-  
-  echo "[zopen_unpack_zip] Custom unpack for Bazel dist zip" >&2
-  echo "[zopen_unpack_zip] Tarball: $tarball" >&2
-  echo "[zopen_unpack_zip] Target: $targetdir" >&2
-  
-  # Create target directory
-  mkdir -p "$targetdir"
-  
-  # Extract into target directory
-  cd "$targetdir"
-  unzip -o -q "$tarball"
-  
-  echo "[zopen_unpack_zip] Extracted $(find . -type f | wc -l) files" >&2
-  ls -la | head -20 >&2
-  
-  return 0
-}
-

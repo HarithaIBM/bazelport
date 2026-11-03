@@ -403,6 +403,30 @@ function build_jni() {
 
 build_jni "${ARCHIVE_DIR}"
 
+# z/OS: locate the port's local_repos directory. It lives one level above
+# the .bazelci build tree (historical layout) but directly inside the port
+# root when building via buildenv/zopen from the top level.
+LOCAL_REPOS_DIR="${WORKSPACE_DIR}/../local_repos"
+if [ ! -d "${LOCAL_REPOS_DIR}" ] && [ -d "${WORKSPACE_DIR}/local_repos" ]; then
+  LOCAL_REPOS_DIR="${WORKSPACE_DIR}/local_repos"
+fi
+
+# z/OS: The rules_java_builtin WORKSPACE prefix (loaded into every workspace,
+# including this bootstrap build of Bazel itself) defines a local_repository
+# pointing at ${install_base}/rules_java. Provide it in the bootstrap install
+# base from the locally extracted rules_java repo (no network).
+log "Adding rules_java to install base..."
+rm -rf "${ARCHIVE_DIR}/rules_java"
+cp -r "${LOCAL_REPOS_DIR}/rules_java" "${ARCHIVE_DIR}/rules_java"
+
+# z/OS: The local_config_platform WORKSPACE suffix (appended to every
+# workspace) defines @platforms / @internal_platforms_do_not_use pointing at
+# ${install_base}/platforms. Provide it in the bootstrap install base too.
+log "Adding platforms to install base..."
+rm -rf "${ARCHIVE_DIR}/platforms"
+cp -r "${LOCAL_REPOS_DIR}/platforms" "${ARCHIVE_DIR}/platforms"
+
+
 cp $OUTPUT_DIR/libblaze.jar ${ARCHIVE_DIR}
 
 # TODO(b/28965185): Remove when xcode-locator is no longer required in embedded_binaries.

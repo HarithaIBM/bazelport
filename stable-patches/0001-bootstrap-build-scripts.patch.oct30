@@ -1,0 +1,159 @@
+diff --git a/compile.sh b/compile.sh
+old mode 100644
+new mode 100755
+index 90f2a29..28c7720
+--- a/compile.sh
++++ b/compile.sh
+@@ -63,12 +63,23 @@ display "."
+ log "Building output/bazel"
+ # We set host and target platform directly because we are building for the local
+ # host.
+-bazel_build "src:bazel_nojdk${EXE_EXT}" \
++# z/OS: build the nojdk variant - the default 'bazel-bin' variant downloads and embeds a
++# prebuilt Linux OpenJDK (@openjdk_linux_vanilla), which is impossible on z/OS (no network,
++# wrong platform). The nojdk variant is an official upstream distribution and uses the
++# system-installed JDK (JAVA_HOME / IBM Semeru z/OS) at runtime.
++bazel_build "src:bazel-bin_nojdk${EXE_EXT}" \
+   --action_env=PATH \
+-  --host_platform=@platforms//host \
+-  --platforms=@platforms//host \
++  --action_env=CC=clang \
++  --action_env=CXX=clang++ \
++  --verbose_failures \
++  --color=no \
++  --curses=no \
+   || fail "Could not build Bazel"
+-bazel_bin_path="$(get_bazel_bin_path)/src/bazel_nojdk${EXE_EXT}"
++# z/OS: `bazel info bazel-bin` stdout comes back EBCDIC-garbled, so prefer the
++# workspace-relative bazel-bin symlink that the invocation creates anyway.
++bazel_bin_path="bazel-bin/src/bazel_nojdk${EXE_EXT}"
++[ -e "$bazel_bin_path" ] || \
++  bazel_bin_path="$(get_bazel_bin_path)/src/bazel_nojdk${EXE_EXT}"
+ [ -e "$bazel_bin_path" ] \
+   || fail "Could not find freshly built Bazel binary at '$bazel_bin_path'"
+ cp -f "$bazel_bin_path" "output/bazel${EXE_EXT}" \
+diff --git a/scripts/bootstrap/bootstrap.sh b/scripts/bootstrap/bootstrap.sh
+old mode 100644
+new mode 100755
+index 9c7cdbe..aee564b
+--- a/scripts/bootstrap/bootstrap.sh
++++ b/scripts/bootstrap/bootstrap.sh
+@@ -33,18 +33,22 @@ fi
+ 
+ # TODO: remove `--repo_env=BAZEL_HTTP_RULES_URLS_AS_DEFAULT_CANONICAL_ID=0` once all dependencies are
+ #  mirrored. See https://github.com/bazelbuild/bazel/pull/19549 for more context.
+-_BAZEL_ARGS="--spawn_strategy=standalone \
++# z/OS: Added explicit PATH to action_env so uname and other tools are found
++# z/OS: Configure Python explicitly for z/OS instead of autodetection
++# z/OS: Disable bzlmod to avoid Python platform detection issues - use WORKSPACE mode
++# z/OS: Comment out --spawn_strategy as it's not recognized by bootstrap bazel
++_BAZEL_ARGS="--compilation_mode=opt \
+       --nojava_header_compilation \
+-      --strategy=Javac=worker --worker_quit_after_build --ignore_unsupported_sandboxing \
+-      --compilation_mode=opt \
+       --repository_cache=derived/repository_cache \
+       --repo_env=BAZEL_HTTP_RULES_URLS_AS_DEFAULT_CANONICAL_ID=0 \
+       --extra_toolchains=//scripts/bootstrap:all \
+-      --extra_toolchains=@bazel_tools//tools/python:autodetecting_toolchain \
+-      --enable_bzlmod \
++      --noenable_bzlmod \
+       --check_direct_dependencies=error \
+       --lockfile_mode=update \
+       --override_repository=$(cat derived/maven/MAVEN_CANONICAL_REPO_NAME)=derived/maven \
++      --action_env=PATH=${PATH} \
++      --action_env=PYTHON_BIN_PATH=/home/opnzos/local/install/bin/python3.8 \
++      --python_path=/home/opnzos/local/install/bin/python3.8 \
+       ${DIST_BOOTSTRAP_ARGS:-} \
+       ${EXTRA_BAZEL_ARGS:-}"
+ 
+diff --git a/scripts/bootstrap/buildenv.sh b/scripts/bootstrap/buildenv.sh
+old mode 100644
+new mode 100755
+index ca3ce10..bb7be0a
+--- a/scripts/bootstrap/buildenv.sh
++++ b/scripts/bootstrap/buildenv.sh
+@@ -177,7 +177,8 @@ function tempdir() {
+   mkdir -p "${DIR}"
+   local DIRBASE=$(basename "${DIR}")
+   eval "cleanup_tempdir_${DIRBASE}() { rm -rf '${DIR}' >&/dev/null || true ; }"
+-  atexit cleanup_tempdir_${DIRBASE}
++  # z/OS debugging aid: KEEP_TMP=1 keeps the bootstrap output dir after failure
++  [ -n "${KEEP_TMP:-}" ] || atexit cleanup_tempdir_${DIRBASE}
+   NEW_TMPDIR="${DIR}"
+ }
+ tempdir
+diff --git a/scripts/bootstrap/BUILD b/scripts/bootstrap/BUILD
+new file mode 100755
+index 0000000..a75e906
+--- /dev/null
++++ b/scripts/bootstrap/BUILD
+@@ -0,0 +1,26 @@
++load("@bazel_tools//tools/jdk:default_java_toolchain.bzl", "default_java_toolchain")
++
++# This toolchain is used to bootstrap Bazel.
++default_java_toolchain(
++    name = "bootstrap_toolchain",
++    bootclasspath = ["@bazel_tools//tools/jdk:platformclasspath"],
++    genclass = ["//src/java_tools/buildjar:bootstrap_genclass_deploy.jar"],
++    header_compiler = None,  # avoid remote_java_tools dependency
++    header_compiler_direct = None,  # ditto
++    ijar = ["//third_party/ijar"],
++    jacocorunner = None,  # avoid remote_java_tools dependency
++    java_runtime = "@local_jdk//:jdk",
++    javabuilder = ["//src/java_tools/buildjar:bootstrap_VanillaJavaBuilder_deploy.jar"],
++    jvm_opts = [
++        # Prevent "Could not reserve enough space for object heap" errors on Windows.
++        "-Xmx512m",
++        # Using tiered compilation improves performance of Javac when not using the worker mode.
++        "-XX:+TieredCompilation",
++        "-XX:TieredStopAtLevel=1",
++    ],
++    singlejar = ["//src/tools/singlejar:singlejar"],
++    source_version = "8",
++    tags = ["manual"],
++    target_version = "8",
++    visibility = ["//visibility:public"],
++)
+diff --git a/create_rules_java_builtin.sh b/create_rules_java_builtin.sh
+new file mode 100755
+index 0000000..de8a5c2
+--- /dev/null
++++ b/create_rules_java_builtin.sh
+@@ -0,0 +1,37 @@
++#!/bin/bash
++# Create a minimal rules_java_builtin for z/OS bootstrap
++
++OUTPUT_DIR="${OUTPUT_DIR:-$(pwd)/output}"
++ARCHIVE_DIR="${OUTPUT_DIR}/archive"
++RULES_JAVA_DIR="${ARCHIVE_DIR}/rules_java"
++
++mkdir -p "${RULES_JAVA_DIR}/toolchains"
++
++# Create WORKSPACE
++cat > "${RULES_JAVA_DIR}/WORKSPACE" << 'WORKSPACE_EOF'
++workspace(name = "rules_java_builtin")
++WORKSPACE_EOF
++
++# Create MODULE.bazel
++cat > "${RULES_JAVA_DIR}/MODULE.bazel" << 'MODULE_EOF'
++module(name = "rules_java_builtin", version = "7.6.1")
++MODULE_EOF
++
++# Create BUILD
++cat > "${RULES_JAVA_DIR}/BUILD" << 'BUILD_EOF'
++# Minimal rules_java_builtin for z/OS
++BUILD_EOF
++
++# Create toolchains/BUILD
++cat > "${RULES_JAVA_DIR}/toolchains/BUILD" << 'TOOLCHAINS_EOF'
++# Use system Java for z/OS
++package(default_visibility = ["//visibility:public"])
++
++# Platform detection
++config_setting(
++    name = "zos",
++    constraint_values = ["@platforms//os:zos"],
++)
++TOOLCHAINS_EOF
++
++echo "Created minimal rules_java_builtin in ${RULES_JAVA_DIR}"
