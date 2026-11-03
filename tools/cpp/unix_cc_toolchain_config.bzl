@@ -283,6 +283,20 @@ def _impl(ctx):
                         # system headers. _ALL_SOURCE is IBM's "enable everything" macro.
                         flags = ["-D_ALL_SOURCE"],
                     ),
+                    flag_group(
+                        # z/OS: CRITICAL — zopen-built libraries (gRPC, protobuf,
+                        # absl, ...) are compiled with -fno-short-enums. z/OS
+                        # clang defaults to short (-fshort-enums) enums, which
+                        # changes struct layouts (enums packed to 1 byte).
+                        # Mixing the two ABI silently corrupts fields passed
+                        # across the boundary: e.g. grpcpp's
+                        # grpc_completion_queue_attributes.cq_completion_type
+                        # reads stack garbage, indexing g_cq_vtable out of
+                        # bounds and branching to NULL (0C4/0C1) on the first
+                        # C++ CompletionQueue creation after a channel exists.
+                        # Everything must use one enum ABI.
+                        flags = ["-fno-short-enums"],
+                    ),
                 ] if is_zos else []),
             ),
             flag_set(

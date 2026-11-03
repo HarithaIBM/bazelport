@@ -222,6 +222,9 @@ def _sanitizer_feature(name = "", specific_compile_flags = [], specific_link_fla
     )
 
 def _impl(ctx):
+    # z/OS: detected via BAZEL_TARGET_LIBC=zos env (set by the z/OS build environment).
+    # Defined early — used by several features below.
+    is_zos = ctx.attr.target_libc == "zos"
     tool_paths = [
         tool_path(name = name, path = path)
         for name, path in ctx.attr.tool_paths.items()
@@ -272,6 +275,30 @@ def _impl(ctx):
         name = "default_compile_flags",
         enabled = True,
         flag_sets = [
+            flag_set(
+                actions = all_compile_actions,
+                flag_groups = ([
+                    flag_group(
+                        # z/OS: enable POSIX/XOPEN declarations (getopt, etc.) in
+                        # system headers. _ALL_SOURCE is IBM's "enable everything" macro.
+                        flags = ["-D_ALL_SOURCE"],
+                    ),
+                    flag_group(
+                        # z/OS: CRITICAL — zopen-built libraries (gRPC, protobuf,
+                        # absl, ...) are compiled with -fno-short-enums. z/OS
+                        # clang defaults to short (-fshort-enums) enums, which
+                        # changes struct layouts (enums packed to 1 byte).
+                        # Mixing the two ABI silently corrupts fields passed
+                        # across the boundary: e.g. grpcpp's
+                        # grpc_completion_queue_attributes.cq_completion_type
+                        # reads stack garbage, indexing g_cq_vtable out of
+                        # bounds and branching to NULL (0C4/0C1) on the first
+                        # C++ CompletionQueue creation after a channel exists.
+                        # Everything must use one enum ABI.
+                        flags = ["-fno-short-enums"],
+                    ),
+                ] if is_zos else []),
+            ),
             flag_set(
                 actions = all_compile_actions,
                 flag_groups = [
@@ -839,9 +866,12 @@ def _impl(ctx):
         ],
     )
 
+    # z/OS: the binder does not support the GNU ld -S option (and the exec
+    # configuration force-enables this feature via strip=ALWAYS, so the feature
+    # cannot simply be disabled) — omit the flag set entirely on z/OS.
     strip_debug_symbols_feature = feature(
         name = "strip_debug_symbols",
-        flag_sets = [
+        flag_sets = [] if is_zos else [
             flag_set(
                 actions = all_link_actions + lto_index_actions,
                 flag_groups = [
@@ -901,7 +931,7 @@ def _impl(ctx):
                                 ),
                             ),
                             flag_group(
-                                flags = ["-Wl,-whole-archive"],
+                                flags = ["-Wl,-whole-archive"] if not is_zos else ["-Wl,"],
                                 expand_if_true =
                                     "libraries_to_link.is_whole_archive",
                                 expand_if_equal = variable_with_value(
@@ -953,7 +983,7 @@ def _impl(ctx):
                                 ),
                             ),
                             flag_group(
-                                flags = ["-Wl,-no-whole-archive"],
+                                flags = ["-Wl,-no-whole-archive"] if not is_zos else ["-Wl,"],
                                 expand_if_true = "libraries_to_link.is_whole_archive",
                                 expand_if_equal = variable_with_value(
                                     name = "libraries_to_link.type",
@@ -1058,7 +1088,7 @@ def _impl(ctx):
                 flag_groups = [
                     flag_group(
                         flags = [
-                            "rcsD" if is_linux else "rcs",
+                            "rc" if is_zos else ("rcsD" if is_linux else "rcs"),
                             "%{output_execpath}",
                         ],
                         expand_if_available = "output_execpath",
@@ -1362,7 +1392,8 @@ def _impl(ctx):
 
     archive_param_file_feature = feature(
         name = "archive_param_file",
-        enabled = True,
+        # z/OS: /bin/ar does not support @param files
+        enabled = not is_zos,
     )
 
     asan_feature = _sanitizer_feature(
@@ -1432,6 +1463,11 @@ def _impl(ctx):
         artifact_name_patterns = []
         features = [
             dependency_file_feature,
+            # z/OS: IBM Open XL clang writes EBCDIC (IBM-1047-tagged) depfiles that
+            # Bazel's Java parser cannot read. Enable no_dotd_file at the TOOLCHAIN
+            # level so it applies to both target and exec configurations (the
+            # --features flag only reaches the target config).
+            feature(name = "no_dotd_file", enabled = True),
             serialized_diagnostics_file_feature,
             random_seed_feature,
             pic_feature,

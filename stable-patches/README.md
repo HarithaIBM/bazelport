@@ -66,14 +66,13 @@ for p in stable-patches/*.patch; do git apply "$p"; done
 
 ## Known remaining issue
 
-**Client-server (daemon) mode**: crashes inside zopen's gRPC 1.73 static
-libraries — see `GRPC_DAEMON_MODE_ANALYSIS.md` for the full diagnosis and
-minimal reproducers (`grpc_repro/`). Root cause is in the zopen gRPC port
-itself (its own `test.status` says "Skipped"): after a channel is created,
-any new completion queue branches to NULL inside
-`grpc_completion_queue_create_internal`, and event-engine threads crash in
-absl time code. Batch mode (`--batch`) is fully functional and is the
-recommended mode until the zopen port is fixed.
+None for daemon mode — **client-server (daemon) mode is now working**
+(2026-11-03). The gRPC 0C4 crash was an `-fno-short-enums` ABI mismatch
+between the zopen-built gRPC libraries and the Bazel client code; the z/OS
+cc toolchain now passes `-fno-short-enums` (patch 0010). Verified:
+`bazel version`, `bazel info`, `bazel shutdown` all rc=0 without `--batch`.
+See `GRPC_DAEMON_MODE_ANALYSIS.md` for the full diagnosis. `--batch`
+remains available as a fallback.
 
 ## Refresh history
 

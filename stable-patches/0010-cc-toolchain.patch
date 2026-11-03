@@ -1,7 +1,5 @@
 diff --git a/tools/cpp/BUILD.tpl b/tools/cpp/BUILD.tpl
-old mode 100644
-new mode 100755
-index f99995d..fa27a89
+index f99995d..fa27a89 100644
 --- a/tools/cpp/BUILD.tpl
 +++ b/tools/cpp/BUILD.tpl
 @@ -85,7 +85,7 @@ cc_toolchain(
@@ -22,6 +20,92 @@ index f99995d..fa27a89
  )
  
  armeabi_cc_toolchain_config(name = "stub_armeabi-v7a")
+diff --git a/tools/cpp/BUILD.zos b/tools/cpp/BUILD.zos
+new file mode 100644
+index 0000000..9faaba6
+--- /dev/null
++++ b/tools/cpp/BUILD.zos
+@@ -0,0 +1,80 @@
++# z/OS C++ Toolchain BUILD file
++# This becomes the BUILD file for local C++ toolchain on z/OS
++
++load(":zos_cc_toolchain_config.bzl", "zos_cc_toolchain_config")
++load("@rules_cc//cc:defs.bzl", "cc_library", "cc_toolchain", "cc_toolchain_suite")
++
++package(default_visibility = ["//visibility:public"])
++
++# Empty libraries for linking
++cc_library(name = "empty_lib")
++cc_library(name = "malloc")
++
++filegroup(
++    name = "empty",
++    srcs = [],
++)
++
++# All compiler files (for sandboxing)
++filegroup(
++    name = "compiler_files",
++    srcs = [":empty"],
++)
++
++filegroup(
++    name = "linker_files",
++    srcs = [":empty"],
++)
++
++filegroup(
++    name = "ar_files",
++    srcs = [":empty"],
++)
++
++filegroup(
++    name = "all_files",
++    srcs = [":empty"],
++)
++
++# Label flag for extra libraries
++label_flag(
++    name = "link_extra_libs",
++    build_setting_default = ":empty_lib",
++)
++
++cc_library(
++    name = "link_extra_lib",
++    deps = [":link_extra_libs"],
++)
++
++# Toolchain suite
++cc_toolchain_suite(
++    name = "toolchain",
++    toolchains = {
++        "zos|clang": ":cc-compiler-zos",
++        "s390x|clang": ":cc-compiler-zos",
++        "zos": ":cc-compiler-zos",
++        "s390x": ":cc-compiler-zos",
++    },
++)
++
++# z/OS clang toolchain
++cc_toolchain(
++    name = "cc-compiler-zos",
++    all_files = ":all_files",
++    ar_files = ":ar_files",
++    as_files = ":empty",
++    compiler_files = ":compiler_files",
++    dwp_files = ":empty",
++    linker_files = ":linker_files",
++    objcopy_files = ":empty",
++    strip_files = ":empty",
++    supports_param_files = 1,
++    toolchain_config = ":local_zos",
++    toolchain_identifier = "zos-clang-toolchain",
++)
++
++# Toolchain configuration
++zos_cc_toolchain_config(
++    name = "local_zos",
++)
 diff --git a/tools/cpp/unix_cc_configure.bzl b/tools/cpp/unix_cc_configure.bzl
 index 2184487..58c8a72 100644
 --- a/tools/cpp/unix_cc_configure.bzl
@@ -185,9 +269,7 @@ index 2184487..58c8a72 100644
              "%{unfiltered_compile_flags}": get_starlark_list(
                  _get_no_canonical_prefixes_opt(repository_ctx, cc) + [
 diff --git a/tools/cpp/unix_cc_toolchain_config.bzl b/tools/cpp/unix_cc_toolchain_config.bzl
-old mode 100644
-new mode 100755
-index 1b1b021..330438f
+index 1b1b021..46fb28b 100644
 --- a/tools/cpp/unix_cc_toolchain_config.bzl
 +++ b/tools/cpp/unix_cc_toolchain_config.bzl
 @@ -222,6 +222,9 @@ def _sanitizer_feature(name = "", specific_compile_flags = [], specific_link_fla
@@ -200,7 +282,7 @@ index 1b1b021..330438f
      tool_paths = [
          tool_path(name = name, path = path)
          for name, path in ctx.attr.tool_paths.items()
-@@ -272,6 +275,16 @@ def _impl(ctx):
+@@ -272,6 +275,30 @@ def _impl(ctx):
          name = "default_compile_flags",
          enabled = True,
          flag_sets = [
@@ -212,12 +294,26 @@ index 1b1b021..330438f
 +                        # system headers. _ALL_SOURCE is IBM's "enable everything" macro.
 +                        flags = ["-D_ALL_SOURCE"],
 +                    ),
++                    flag_group(
++                        # z/OS: CRITICAL — zopen-built libraries (gRPC, protobuf,
++                        # absl, ...) are compiled with -fno-short-enums. z/OS
++                        # clang defaults to short (-fshort-enums) enums, which
++                        # changes struct layouts (enums packed to 1 byte).
++                        # Mixing the two ABI silently corrupts fields passed
++                        # across the boundary: e.g. grpcpp's
++                        # grpc_completion_queue_attributes.cq_completion_type
++                        # reads stack garbage, indexing g_cq_vtable out of
++                        # bounds and branching to NULL (0C4/0C1) on the first
++                        # C++ CompletionQueue creation after a channel exists.
++                        # Everything must use one enum ABI.
++                        flags = ["-fno-short-enums"],
++                    ),
 +                ] if is_zos else []),
 +            ),
              flag_set(
                  actions = all_compile_actions,
                  flag_groups = [
-@@ -839,9 +852,12 @@ def _impl(ctx):
+@@ -839,9 +866,12 @@ def _impl(ctx):
          ],
      )
  
@@ -231,7 +327,7 @@ index 1b1b021..330438f
              flag_set(
                  actions = all_link_actions + lto_index_actions,
                  flag_groups = [
-@@ -901,7 +917,7 @@ def _impl(ctx):
+@@ -901,7 +931,7 @@ def _impl(ctx):
                                  ),
                              ),
                              flag_group(
@@ -240,7 +336,7 @@ index 1b1b021..330438f
                                  expand_if_true =
                                      "libraries_to_link.is_whole_archive",
                                  expand_if_equal = variable_with_value(
-@@ -953,7 +969,7 @@ def _impl(ctx):
+@@ -953,7 +983,7 @@ def _impl(ctx):
                                  ),
                              ),
                              flag_group(
@@ -249,7 +345,7 @@ index 1b1b021..330438f
                                  expand_if_true = "libraries_to_link.is_whole_archive",
                                  expand_if_equal = variable_with_value(
                                      name = "libraries_to_link.type",
-@@ -1058,7 +1074,7 @@ def _impl(ctx):
+@@ -1058,7 +1088,7 @@ def _impl(ctx):
                  flag_groups = [
                      flag_group(
                          flags = [
@@ -258,7 +354,7 @@ index 1b1b021..330438f
                              "%{output_execpath}",
                          ],
                          expand_if_available = "output_execpath",
-@@ -1362,7 +1378,8 @@ def _impl(ctx):
+@@ -1362,7 +1392,8 @@ def _impl(ctx):
  
      archive_param_file_feature = feature(
          name = "archive_param_file",
@@ -268,7 +364,7 @@ index 1b1b021..330438f
      )
  
      asan_feature = _sanitizer_feature(
-@@ -1432,6 +1449,11 @@ def _impl(ctx):
+@@ -1432,6 +1463,11 @@ def _impl(ctx):
          artifact_name_patterns = []
          features = [
              dependency_file_feature,
@@ -280,92 +376,6 @@ index 1b1b021..330438f
              serialized_diagnostics_file_feature,
              random_seed_feature,
              pic_feature,
-diff --git a/tools/cpp/BUILD.zos b/tools/cpp/BUILD.zos
-new file mode 100644
-index 0000000..9faaba6
---- /dev/null
-+++ b/tools/cpp/BUILD.zos
-@@ -0,0 +1,80 @@
-+# z/OS C++ Toolchain BUILD file
-+# This becomes the BUILD file for local C++ toolchain on z/OS
-+
-+load(":zos_cc_toolchain_config.bzl", "zos_cc_toolchain_config")
-+load("@rules_cc//cc:defs.bzl", "cc_library", "cc_toolchain", "cc_toolchain_suite")
-+
-+package(default_visibility = ["//visibility:public"])
-+
-+# Empty libraries for linking
-+cc_library(name = "empty_lib")
-+cc_library(name = "malloc")
-+
-+filegroup(
-+    name = "empty",
-+    srcs = [],
-+)
-+
-+# All compiler files (for sandboxing)
-+filegroup(
-+    name = "compiler_files",
-+    srcs = [":empty"],
-+)
-+
-+filegroup(
-+    name = "linker_files",
-+    srcs = [":empty"],
-+)
-+
-+filegroup(
-+    name = "ar_files",
-+    srcs = [":empty"],
-+)
-+
-+filegroup(
-+    name = "all_files",
-+    srcs = [":empty"],
-+)
-+
-+# Label flag for extra libraries
-+label_flag(
-+    name = "link_extra_libs",
-+    build_setting_default = ":empty_lib",
-+)
-+
-+cc_library(
-+    name = "link_extra_lib",
-+    deps = [":link_extra_libs"],
-+)
-+
-+# Toolchain suite
-+cc_toolchain_suite(
-+    name = "toolchain",
-+    toolchains = {
-+        "zos|clang": ":cc-compiler-zos",
-+        "s390x|clang": ":cc-compiler-zos",
-+        "zos": ":cc-compiler-zos",
-+        "s390x": ":cc-compiler-zos",
-+    },
-+)
-+
-+# z/OS clang toolchain
-+cc_toolchain(
-+    name = "cc-compiler-zos",
-+    all_files = ":all_files",
-+    ar_files = ":ar_files",
-+    as_files = ":empty",
-+    compiler_files = ":compiler_files",
-+    dwp_files = ":empty",
-+    linker_files = ":linker_files",
-+    objcopy_files = ":empty",
-+    strip_files = ":empty",
-+    supports_param_files = 1,
-+    toolchain_config = ":local_zos",
-+    toolchain_identifier = "zos-clang-toolchain",
-+)
-+
-+# Toolchain configuration
-+zos_cc_toolchain_config(
-+    name = "local_zos",
-+)
 diff --git a/tools/cpp/zos_cc_toolchain_config.bzl b/tools/cpp/zos_cc_toolchain_config.bzl
 new file mode 100644
 index 0000000..30260fb
