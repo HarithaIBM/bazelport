@@ -194,6 +194,17 @@ export ZOPEN_INSTALL_CMD="mkdir -p ${ZOPEN_INSTALL_DIR}/bin && cp output/bazel $
 export ZOPEN_CONFIGURE="skip"
 export ZOPEN_MAKE="zopen_bazel_make"
 export ZOPEN_INSTALL="zopen_bazel_install"
+# ============================================================================
+# Toolchain locations — override via environment variables; defaults are
+# known-good locations on this system. BAZELPORT_ROOT is derived from this
+# buildenv file's location so the port works from any checkout path.
+# ============================================================================
+export BAZELPORT_ROOT="${BAZELPORT_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)}"
+export JAVA_HOME="${JAVA_HOME:-/home/haritha/dhjava/J21.0_64}"
+export PYTHON_HOME="${PYTHON_HOME:-/home/haritha/bazelDepTools/python}"
+export COMPILER_PATH="${COMPILER_PATH:-/home/haritha/install_test/usr/lpp/IBM/oelcpp/v3r0/bin/clang}"
+export ZOPEN_ROOTFS="${ZOPEN_ROOTFS:-}"
+
 
 # ============================================================================
 # Full Bazel build: Stage 1 (bootstrap) + Stage 2 (Bazel builds itself).
@@ -212,19 +223,24 @@ zopen_bazel_make() {
         cd ..
     fi
 
-    # --- toolchain environment (verified in run_stage2.sh) ---
-    export JAVA_HOME=${JAVA_HOME:-/home/haritha/dhjava/J21.0_64}
-    # python3 for build actions (build_tar wrappers, genrules); needs LIBPATH
-    export PYTHON_BIN_PATH=${PYTHON_BIN_PATH:-/home/haritha/bazelDepTools/python/bin/python3}
-    export LIBPATH="/home/haritha/bazelDepTools/python/lib:${LIBPATH:-}"
-    # zopen rootfs: honor ZOPEN_ROOTFS, else known-good local locations
-    if [ -z "${ZOPEN_ROOTFS:-}" ]; then
+    # --- toolchain environment ---
+    # zopen rootfs: honor ZOPEN_ROOTFS, else known-good local locations.
+    # Detection requires a working GNU grep (zopen puts GNU coreutils/grep/
+    # findutils in usr/local/altbin; usr/local/bin only has ggrep/gfind).
+    if [ -z "${ZOPEN_ROOTFS}" ]; then
         for d in /data/zopen /home/haritha/zopen_23may/zopen; do
-            [ -d "$d/usr/local/bin" ] && ZOPEN_ROOTFS="$d" && break
+            [ -x "$d/usr/local/altbin/grep" ] && ZOPEN_ROOTFS="$d" && break
         done
     fi
     ZOPEN_ROOTFS="${ZOPEN_ROOTFS:-/data/zopen}"
-    export PATH="${JAVA_HOME}/bin:$(dirname "$PYTHON_BIN_PATH"):${ZOPEN_ROOTFS}/usr/local/bin:/home/haritha/install_test/usr/lpp/IBM/oelcpp/v3r0/bin:$(pwd)/local_repos/zos_cc_tools:$PATH"
+    # python3 for build actions (build_tar wrappers, genrules). The wrapper
+    # sets LIBPATH itself — bazel action spawns don't inherit the server's.
+    export PYTHON_BIN_PATH="${PYTHON_BIN_PATH:-${BAZELPORT_ROOT}/local_repos/python_wrapper/python3}"
+    export LIBPATH="${PYTHON_HOME}/lib:${LIBPATH:-}"
+    # NOTE: altbin MUST come first — the z/OS USS tools in /bin (FSUM) don't
+    # support grep -o or find -mindepth, which Stage 1's link_file/embedding
+    # steps require.
+    export PATH="${ZOPEN_ROOTFS}/usr/local/altbin:${JAVA_HOME}/bin:${BAZELPORT_ROOT}/local_repos/python_wrapper:${ZOPEN_ROOTFS}/usr/local/bin:$(dirname "$COMPILER_PATH"):$PATH"
     export CC=${CC:-clang}
     export CXX=${CXX:-clang++}
     # z/OS: identify the libc to the auto-configured cc toolchain

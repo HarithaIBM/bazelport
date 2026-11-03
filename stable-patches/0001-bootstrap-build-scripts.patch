@@ -106,7 +106,7 @@ index 0000000..a75e906
 +    visibility = ["//visibility:public"],
 +)
 diff --git a/scripts/bootstrap/bootstrap.sh b/scripts/bootstrap/bootstrap.sh
-index 9c7cdbe..ad586fb 100644
+index 9c7cdbe..d345b03 100644
 --- a/scripts/bootstrap/bootstrap.sh
 +++ b/scripts/bootstrap/bootstrap.sh
 @@ -33,18 +33,22 @@ fi
@@ -132,8 +132,8 @@ index 9c7cdbe..ad586fb 100644
        --lockfile_mode=update \
        --override_repository=$(cat derived/maven/MAVEN_CANONICAL_REPO_NAME)=derived/maven \
 +      --action_env=PATH=${PATH} \
-+      --action_env=PYTHON_BIN_PATH=/home/haritha/bazelDepTools/python/bin/python3 \
-+      --python_path=/home/haritha/bazelDepTools/python/bin/python3 \
++      --action_env=PYTHON_BIN_PATH=${PYTHON_BIN_PATH:-/home/haritha/bazelDepTools/python/bin/python3} \
++      --python_path=${PYTHON_BIN_PATH:-/home/haritha/bazelDepTools/python/bin/python3} \
        ${DIST_BOOTSTRAP_ARGS:-} \
        ${EXTRA_BAZEL_ARGS:-}"
  
@@ -152,7 +152,7 @@ index ca3ce10..bb7be0a 100644
  }
  tempdir
 diff --git a/scripts/bootstrap/compile.sh b/scripts/bootstrap/compile.sh
-index d7e6b9c..bfdbf92 100644
+index d7e6b9c..f24d801 100644
 --- a/scripts/bootstrap/compile.sh
 +++ b/scripts/bootstrap/compile.sh
 @@ -403,6 +403,36 @@ function build_jni() {
@@ -167,10 +167,10 @@ index d7e6b9c..bfdbf92 100644
 +  LOCAL_REPOS_DIR="${WORKSPACE_DIR}/local_repos"
 +fi
 +# zopen build may extract the source into a scratch directory where neither
-+# relative layout exists — fall back to the port repository's local_repos
-+# (absolute path; the WORKSPACE file references the same location).
-+if [ ! -d "${LOCAL_REPOS_DIR}" ] && [ -d "/home/haritha/code/bazel-7.2.0/bazelport/local_repos" ]; then
-+  LOCAL_REPOS_DIR="/home/haritha/code/bazel-7.2.0/bazelport/local_repos"
++# relative layout exists — fall back to the port repository's local_repos,
++# located via $BAZELPORT_ROOT (set by the port's buildenv) or its default.
++if [ ! -d "${LOCAL_REPOS_DIR}" ] && [ -n "${BAZELPORT_ROOT:-}" ] && [ -d "${BAZELPORT_ROOT}/local_repos" ]; then
++  LOCAL_REPOS_DIR="${BAZELPORT_ROOT}/local_repos"
 +fi
 +
 +# z/OS: The rules_java_builtin WORKSPACE prefix (loaded into every workspace,

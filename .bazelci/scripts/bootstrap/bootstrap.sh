@@ -47,8 +47,8 @@ _BAZEL_ARGS="--compilation_mode=opt \
       --lockfile_mode=update \
       --override_repository=$(cat derived/maven/MAVEN_CANONICAL_REPO_NAME)=derived/maven \
       --action_env=PATH=${PATH} \
-      --action_env=PYTHON_BIN_PATH=/home/haritha/bazelDepTools/python/bin/python3 \
-      --python_path=/home/haritha/bazelDepTools/python/bin/python3 \
+      --action_env=PYTHON_BIN_PATH=${PYTHON_BIN_PATH:-/home/haritha/bazelDepTools/python/bin/python3} \
+      --python_path=${PYTHON_BIN_PATH:-/home/haritha/bazelDepTools/python/bin/python3} \
       ${DIST_BOOTSTRAP_ARGS:-} \
       ${EXTRA_BAZEL_ARGS:-}"
 
