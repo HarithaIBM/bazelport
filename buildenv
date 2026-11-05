@@ -396,13 +396,28 @@ zopen_bazel_make() {
     # environment, so the paths are templated and substituted here.
     _tmpl() {  # $1=template $2=out; remaining args are sed expressions
         _in="$1"; _out="$2"; shift 2
-        sed "$@" "${_in}" > "${_out}.tmp" && mv "${_out}.tmp" "${_out}"
-        # preserve mode and z/OS file tag from the template
-        chmod --reference="${_in}" "${_out}" 2>/dev/null || true
-        _tag="$(/bin/chtag -p "${_in}" 2>/dev/null | awk '{print $1, $2}')"
-        case "${_tag}" in
-            "t "*) /bin/chtag -tc $(echo "${_tag}" | awk '{print $2}') "${_out}" 2>/dev/null ;;
+        # The .in templates are BINARY-tagged (raw byte reads). The zopen-build
+        # harness runs EBCDIC-native with _CEE_RUNOPTS FILETAG(AUTOCVT,
+        # AUTOTAG): newly created files are auto-tagged in the native codepage
+        # and ASCII writes get converted to EBCDIC, breaking Bazel's Starlark
+        # parsing ("target not declared in package"). _CEE_RUNOPTS cannot be
+        # changed at runtime (read once at LE init), so PRE-CREATE the output
+        # with the correct tag: the shell's truncating redirect (>) preserves
+        # an existing file tag, making the write codepage-stable.
+        #   *.sh  -> ISO8859-1 text (readable by EBCDIC /bin/sh AND ASCII bash)
+        #   BUILD -> binary (read raw by Bazel's JVM; text tags make NIO
+        #            reads convert to the native codepage and corrupt UTF-8)
+        case "${_out}" in
+            *.sh) _tflag="-tc ISO8859-1" ;;
+            *)    _tflag="-b" ;;
         esac
+        rm -f "${_out}.tmp"
+        : > "${_out}.tmp"
+        /bin/chtag ${_tflag} "${_out}.tmp" 2>/dev/null
+        ( unset _TAG_REDIR_OUT _TAG_REDIR_ALL; sed "$@" "${_in}" > "${_out}.tmp" )
+        mv -f "${_out}.tmp" "${_out}"
+        chmod --reference="${_in}" "${_out}" 2>/dev/null || true
+        /bin/chtag ${_tflag} "${_out}" 2>/dev/null || true
     }
     _repos="${BAZELPORT_ROOT}/local_repos"
     _gr="${GRPC_HOME:-${ZOPEN_ROOTFS}/usr/local/zopen/grpc/grpc}"
