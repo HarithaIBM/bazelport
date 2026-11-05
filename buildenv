@@ -342,12 +342,16 @@ zopen_bazel_make() {
     export _TAG_REDIR_IN=txt=ISO8859-1
     export _TAG_REDIR_OUT=bin
     unset _TAG_REDIR_ALL
-    export JAVA_TOOL_OPTIONS="-Dfile.encoding=UTF-8 ${JAVA_TOOL_OPTIONS:-}"
+    # JVM console output: pin to ISO8859-1 so JVM messages (server logs,
+    # javac notes) are ASCII, not the native EBCDIC codepage — the main source
+    # of garbled blobs in zopen build logs. (stdout/stderr encoding is separate
+    # from file.encoding; Java 18+ honors these properties.)
+    export JAVA_TOOL_OPTIONS="-Dfile.encoding=UTF-8 -Dstdout.encoding=ISO8859-1 -Dstderr.encoding=ISO8859-1 ${JAVA_TOOL_OPTIONS:-}"
     # Explicit annotation processors (discovery is unreliable on z/OS javac)
     export BAZEL_JAVAC_OPTS="-processor com.google.auto.value.processor.AutoValueProcessor,com.google.auto.value.processor.AutoOneOfProcessor -J-Xmx4g -J-Xms2g"
     # --color=no: bazel terminal progress (spinners, ANSI) renders as garbled
     # EBCDIC in zopen logs; disable colors to reduce the noise.
-    export EXTRA_BAZEL_ARGS="--tool_java_runtime_version=local_jdk --java_runtime_version=local_jdk --spawn_strategy=standalone --features=no_dotd_file --cxxopt=-std=c++17 --host_cxxopt=-std=c++17 --@rules_jvm_external//settings:stamp_manifest=False --color=no"
+    export EXTRA_BAZEL_ARGS="--tool_java_runtime_version=local_jdk --java_runtime_version=local_jdk --spawn_strategy=standalone --features=no_dotd_file --cxxopt=-std=c++17 --host_cxxopt=-std=c++17 --@rules_jvm_external//settings:stamp_manifest=False --color=no --show_progress=no"
     export VERBOSE=${VERBOSE:-no}
 
     # CRITICAL: normal mode for Stage 2 (full WORKSPACE machinery).
