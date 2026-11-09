@@ -1,0 +1,18 @@
+#!/bin/sh
+# z/OS compiler/linker dispatcher for the Bazel cc toolchain.
+#
+# Compile actions (first -c/-S/-E flag) go to the plain clang driver, which
+# selects the language by file extension (C sources must NOT be compiled as
+# C++). Everything else (link actions) goes to the clang++ driver, which knows
+# how to set up the z/OS Language Environment C++ runtime (CEE.SCEELIB CRTDQ*
+# members, CELQMAIN entry point).
+CLANG=/home/haritha/install_test/usr/lpp/IBM/oelcpp/v3r0/bin/clang
+CLANGXX=/home/haritha/install_test/usr/lpp/IBM/oelcpp/v3r0/bin/clang++
+
+for arg in "$@"; do
+  case "$arg" in
+    -c|-S|-E) exec "$CLANG" "$@" ;;
+  esac
+done
+
+exec "$CLANGXX" "$@"

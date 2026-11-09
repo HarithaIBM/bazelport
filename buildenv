@@ -371,13 +371,21 @@ zopen_bazel_make() {
             \! -path "*/.git/*" \! -path "./output/*" \! -path "./bazel-*" \
             \! -path "*/bazel-out/*" \! -path "./derived/*" \
             -exec /bin/chtag -b {} + 2>/dev/null
+        # same for the port's local_repos (a fresh git clone loses all file
+        # tags; clang/grpc header includes are read from there)
+        find "${BAZELPORT_ROOT}/local_repos" -type f \
+            \! -path "*/.git/*" \
+            -exec /bin/chtag -b {} + 2>/dev/null
         # text-tag everything that is not a known binary type (covers
         # extensionless BUILD-adjacent files, dotfiles, scripts, sources).
         # NOTE: files read by the JVM via NIO (Files.newBufferedReader — e.g.
         # bazel_downloader.cfg, *.json, *.options) MUST stay BINARY-tagged:
         # z/OS converts text-tagged files to the process codepage on read,
         # which breaks UTF-8 decoding (MalformedInputException).
-        find . -type f \
+        # *.in templates stay binary (raw byte reads by _tmpl's sed);
+        # python_wrapper/* holds program objects (must stay binary).
+        for _tagroot in . "${BAZELPORT_ROOT}/local_repos"; do
+        find "${_tagroot}" -type f \
             \! -path "*/.git/*" \! -path "./output/*" \! -path "./bazel-*" \
             \! -path "*/bazel-out/*" \! -path "./derived/*" \
             \! -name "*.jar" \! -name "*.zip" \! -name "*.war" \! -name "*.ear" \
@@ -388,7 +396,9 @@ zopen_bazel_make() {
             \! -name "*.zip.exe" \
             \! -name "*.cfg" \! -name "*.options" \! -name "*.version" \
             \! -name "*.json" \! -name "*.bazelrc" \! -name "*.patch" \
+            \! -name "*.in" \! -path "*/python_wrapper/*" \
             -exec /bin/chtag -tc ISO8859-1 {} + 2>/dev/null
+        done
         echo "Tree tagging complete."
     fi
     # Generate local_repos wrapper BUILD files from .in templates: they wrap
