@@ -207,6 +207,15 @@ export ZOPEN_INSTALL="zopen_bazel_install"
 # ============================================================================
 if [ -f "./buildenv" ] && [ -d "./stable-patches" ]; then
     # we are in the port root at zopen build startup
+    # repo files that ALSO exist in the bazel dist zip (CODEOWNERS,
+    # CONTRIBUTING.md, LICENSE, README.md): unzip would prompt an invisible
+    # "replace?" on them and hang forever when stdin is a terminal.
+    # Remove them here — the dist extract provides the build's copies,
+    # and git restores the repo's copies at any time.
+    for _f in CODEOWNERS CONTRIBUTING.md LICENSE README.md; do
+        [ -f "./$_f" ] && rm -f "./$_f"
+    done
+    unset _f
     if [ -d "./.bazelci" ]; then
         echo "note: removing stale .bazelci (zopen extract-cleanup workaround)"
         rm -rf "./.bazelci"
