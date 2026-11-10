@@ -1,0 +1,196 @@
+diff --git a/third_party/googleapis/BUILD.bazel b/third_party/googleapis/BUILD.bazel
+index fd9ef80..5979b8c 100644
+--- a/third_party/googleapis/BUILD.bazel
++++ b/third_party/googleapis/BUILD.bazel
+@@ -66,106 +66,99 @@ filegroup(
+     visibility = ["@io_bazel//src:__pkg__"],
+ )
+ 
+-java_proto_library(
++alias(
+     name = "google_devtools_build_v1_build_status_java_proto",
+-    deps = [":google_devtools_build_v1_build_status_proto"],
++    actual = "@io_bazel//src/main/protobuf:all_java_protos",
+ )
+ 
+-java_proto_library(
++alias(
+     name = "google_devtools_build_v1_build_events_java_proto",
+-    deps = [":google_devtools_build_v1_build_events_proto"],
++    actual = "@io_bazel//src/main/protobuf:all_java_protos",
+ )
+ 
+-java_grpc_library(
++alias(
+     name = "google_devtools_build_v1_publish_build_event_java_grpc",
+-    srcs = [":google_devtools_build_v1_publish_build_event_proto"],
+-    deps = [":google_devtools_build_v1_publish_build_event_java_proto"],
++    actual = "@io_bazel//src/main/protobuf:all_java_protos",
+ )
+ 
+-java_proto_library(
++alias(
+     name = "google_devtools_build_v1_publish_build_event_java_proto",
+-    deps = [":google_devtools_build_v1_publish_build_event_proto"],
++    actual = "@io_bazel//src/main/protobuf:all_java_protos",
+ )
+ 
+-java_proto_library(
++alias(
+     name = "google_bytestream_bytestream_java_proto",
+-    deps = [":google_bytestream_bytestream_proto"],
++    actual = "@io_bazel//src/main/protobuf:all_java_protos",
+ )
+ 
+-java_proto_library(
++alias(
+     name = "google_longrunning_operations_java_proto",
+-    deps = [":google_longrunning_operations_proto"],
++    actual = "@io_bazel//src/main/protobuf:all_java_protos",
+ )
+ 
+-java_proto_library(
++alias(
+     name = "google_watch_v1_java_proto",
+-    deps = [":google_watch_v1_proto"],
++    actual = "@io_bazel//src/main/protobuf:all_java_protos",
+ )
+ 
+-java_proto_library(
++alias(
+     name = "google_rpc_status_java_proto",
+-    deps = [":google_rpc_status_proto"],
++    actual = "@io_bazel//src/main/protobuf:all_java_protos",
+ )
+ 
+-java_proto_library(
++alias(
+     name = "google_rpc_error_details_java_proto",
+-    deps = [":google_rpc_error_details_proto"],
++    actual = "@io_bazel//src/main/protobuf:all_java_protos",
+ )
+ 
+-java_proto_library(
++alias(
+     name = "google_rpc_code_java_proto",
+-    deps = [":google_rpc_code_proto"],
++    actual = "@io_bazel//src/main/protobuf:all_java_protos",
+ )
+ 
+-java_proto_library(
++alias(
+     name = "google_devtools_remoteexecution_v1test_remote_execution_java_proto",
+-    deps = [":google_devtools_remoteexecution_v1test_remote_execution_proto"],
++    actual = "@io_bazel//src/main/protobuf:all_java_protos",
+ )
+ 
+-java_proto_library(
++alias(
+     name = "google_api_annotations_java_proto",
+-    deps = [":google_api_annotations_proto"],
++    actual = "@io_bazel//src/main/protobuf:all_java_protos",
+ )
+ 
+-java_proto_library(
++alias(
+     name = "google_api_client_java_proto",
+-    deps = [":google_api_client_proto"],
++    actual = "@io_bazel//src/main/protobuf:all_java_protos",
+ )
+ 
+-java_proto_library(
++alias(
+     name = "google_api_field_behavior_java_proto",
+-    deps = [":google_api_field_behavior_proto"],
++    actual = "@io_bazel//src/main/protobuf:all_java_protos",
+ )
+ 
+-java_proto_library(
++alias(
+     name = "google_api_http_java_proto",
+-    deps = [":google_api_http_proto"],
++    actual = "@io_bazel//src/main/protobuf:all_java_protos",
+ )
+ 
+-java_proto_library(
++alias(
+     name = "google_api_auth_java_proto",
+-    deps = [":google_api_auth_proto"],
++    actual = "@io_bazel//src/main/protobuf:all_java_protos",
+ )
+ 
+-java_grpc_library(
++alias(
+     name = "google_bytestream_bytestream_java_grpc",
+-    srcs = [":google_bytestream_bytestream_proto"],
+-    deps = [":google_bytestream_bytestream_java_proto"],
++    actual = "@io_bazel//src/main/protobuf:all_java_protos",
+ )
+ 
+-java_grpc_library(
++alias(
+     name = "google_watch_v1_java_grpc",
+-    srcs = [":google_watch_v1_proto"],
+-    deps = [":google_watch_v1_java_proto"],
++    actual = "@io_bazel//src/main/protobuf:all_java_protos",
+ )
+ 
+-java_grpc_library(
++alias(
+     name = "google_devtools_remoteexecution_v1test_remote_execution_java_grpc",
+-    srcs = [":google_devtools_remoteexecution_v1test_remote_execution_proto"],
+-    deps = [
+-        ":google_devtools_remoteexecution_v1test_remote_execution_java_proto",
+-        ":google_longrunning_operations_java_proto",
+-    ],
++    actual = "@io_bazel//src/main/protobuf:all_java_protos",
+ )
+ 
+ proto_library(
+diff --git a/third_party/remoteapis/BUILD.bazel b/third_party/remoteapis/BUILD.bazel
+index ab36e13..dc01fb8 100644
+--- a/third_party/remoteapis/BUILD.bazel
++++ b/third_party/remoteapis/BUILD.bazel
+@@ -73,32 +73,27 @@ proto_library(
+     srcs = ["build/bazel/semver/semver.proto"],
+ )
+ 
+-java_proto_library(
++alias(
+     name = "build_bazel_remote_asset_v1_remote_asset_java_proto",
+-    deps = [":build_bazel_remote_asset_v1_remote_asset_proto"],
++    actual = "@io_bazel//src/main/protobuf:all_java_protos",
+ )
+ 
+-java_proto_library(
++alias(
+     name = "build_bazel_remote_execution_v2_remote_execution_java_proto",
+-    deps = [":build_bazel_remote_execution_v2_remote_execution_proto"],
++    actual = "@io_bazel//src/main/protobuf:all_java_protos",
+ )
+ 
+-java_proto_library(
++alias(
+     name = "build_bazel_semver_semver_java_proto",
+-    deps = [":build_bazel_semver_semver_proto"],
++    actual = "@io_bazel//src/main/protobuf:all_java_protos",
+ )
+ 
+-java_grpc_library(
++alias(
+     name = "build_bazel_remote_asset_v1_remote_asset_java_grpc",
+-    srcs = [":build_bazel_remote_asset_v1_remote_asset_proto"],
+-    deps = [":build_bazel_remote_asset_v1_remote_asset_java_proto"],
++    actual = "@io_bazel//src/main/protobuf:all_java_protos",
+ )
+ 
+-java_grpc_library(
++alias(
+     name = "build_bazel_remote_execution_v2_remote_execution_java_grpc",
+-    srcs = [":build_bazel_remote_execution_v2_remote_execution_proto"],
+-    deps = [
+-        ":build_bazel_remote_execution_v2_remote_execution_java_proto",
+-        "@googleapis//:google_longrunning_operations_java_proto",
+-    ],
++    actual = "@io_bazel//src/main/protobuf:all_java_protos",
+ )

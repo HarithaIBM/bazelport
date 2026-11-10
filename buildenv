@@ -163,12 +163,13 @@ zopen_build() {
 #export ZOPEN_CONFIGURE_OPTS="" ## Options to pass to configuration program (defaults to '--prefix=')
 #export ZOPEN_EXTRA_CONFIGURE_OPTS="" ## Extra configure options to pass to configuration program. (defaults to '')
 #export ZOPEN_INSTALL_OPTS="" ## Options to pass to installation program (defaults to 'install')
-#export ZOPEN_MAKE_MINIMAL="" ## Build program will not be passed CFLAGS, LDFLAGS, CPPFLAGS options but will get them from env vars.
-#export ZOPEN_MAKE_OPTS="" ## Options to pass to build program (defaults to '-j')
-export ZOPEN_PATCH_DIR="stable-patches" ## Directory from which patches should be applied.
-# CRITICAL: zopen build re-extracts the pristine bazel-7.2.0-dist.zip before
-# building; without this, all z/OS source fixes would be clobbered and the
-# build would fail. The 12 numbered patches fully reconstruct the port tree.
+# NOTE: patches are applied by zopen_bazel_make, NOT by zopen build itself:
+# a fresh git clone leaves the .patch files untagged, which breaks the
+# EBCDIC patch tooling zopen uses (and zopen would run its patch step on
+# the default stable-patches/ dir before our code can tag anything).
+# Point ZOPEN_PATCH_DIR at an empty dir so zopen skips its patch step;
+# zopen_bazel_make tags and applies stable-patches/ itself (idempotent).
+export ZOPEN_PATCH_DIR="patches"
 
 
 ###
@@ -217,13 +218,13 @@ if [ -z "${BAZELPORT_ROOT:-}" ]; then
     BAZELPORT_ROOT=""
     _be_dir="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd)"
     for _d in "${_be_dir}" "$PWD" "$PWD/.." "$(dirname "${_be_dir}" 2>/dev/null)"; do
-        if [ -d "${_d}/local_repos" ] && [ -d "${_d}/stable-patches" ]; then
+        if { [ -d "${_d}/local_repos" ] || [ -d "${_d}/deps" ]; } && [ -d "${_d}/stable-patches" ]; then
             BAZELPORT_ROOT="${_d}"
             break
         fi
     done
 fi
-if [ -z "${BAZELPORT_ROOT}" ] || [ ! -d "${BAZELPORT_ROOT}/local_repos" ]; then
+if [ -z "${BAZELPORT_ROOT}" ] || { [ ! -d "${BAZELPORT_ROOT}/local_repos" ] && [ ! -d "${BAZELPORT_ROOT}/deps" ]; }; then
     echo "ERROR: cannot locate the bazelport root (needs local_repos/ and stable-patches/). Set BAZELPORT_ROOT." >&2
     return 1 2>/dev/null || exit 1
 fi
@@ -240,24 +241,6 @@ if [ -z "${JAVA_HOME:-}" ]; then
 fi
 export JAVA_HOME
 
-# --- PYTHON_HOME: must point at the IBM Open Enterprise SDK for Python
-# --- (a z/OS program-object python whose DLLs need LIBPATH; the port's
-# --- python_wrapper handles that for bazel action spawns)
-if [ -z "${PYTHON_HOME:-}" ] || [ ! -x "${PYTHON_HOME}/bin/python3" ]; then
-    # Probe the host-built python wrapper — it was compiled against a
-    # specific SDK and can report its prefix.
-    if _pyprefix="$("${BAZELPORT_ROOT}/local_repos/python_wrapper/python3" -c "import sys; print(sys.prefix)" 2>/dev/null)" \
-        && [ -n "${_pyprefix}" ] && [ -x "${_pyprefix}/bin/python3" ]; then
-        PYTHON_HOME="${_pyprefix}"
-    fi
-fi
-if [ -z "${PYTHON_HOME:-}" ] || [ ! -x "${PYTHON_HOME}/bin/python3" ]; then
-    echo "ERROR: PYTHON_HOME must point at the Python SDK (needs bin/python3, e.g. the IBM Open Enterprise SDK for Python)." >&2
-    return 1 2>/dev/null || exit 1
-fi
-export PYTHON_HOME
-export PYTHON_HOME
-
 # --- COMPILER_PATH: env, else `clang` from PATH
 if [ -z "${COMPILER_PATH:-}" ]; then
     if ! COMPILER_PATH="$(command -v clang 2>/dev/null)"; then
@@ -266,6 +249,38 @@ if [ -z "${COMPILER_PATH:-}" ]; then
     fi
 fi
 export COMPILER_PATH
+
+# --- PYTHON_HOME: must point at the IBM Open Enterprise SDK for Python
+# --- (a z/OS program-object python whose DLLs need LIBPATH; the port's
+# --- python_wrapper handles that for bazel action spawns)
+if [ -z "${PYTHON_HOME:-}" ] || [ ! -x "${PYTHON_HOME}/bin/python3" ]; then
+    # Probe the host-built python wrapper — it was compiled against a
+    # specific SDK and can report its prefix. On a fresh clone (before
+    # provisioning) compile a temporary probe from the vendored source;
+    # its baked-in default locates the SDK it was built for.
+    _pw="${BAZELPORT_ROOT}/local_repos/python_wrapper/python3"
+    if [ ! -x "${_pw}" ] && [ -f "${BAZELPORT_ROOT}/deps/files/python_wrapper/python3_wrapper.c" ] \
+        && [ -n "${COMPILER_PATH:-}" ] && [ -x "${COMPILER_PATH}" ]; then
+        _pw="/tmp/bazelport_python_probe.$$"
+        /bin/env _CEE_RUNOPTS='POSIX(ON)' "${COMPILER_PATH}" -D_ALL_SOURCE=1 -fzos-le-char-mode=ascii -O2 \
+            "${BAZELPORT_ROOT}/deps/files/python_wrapper/python3_wrapper.c" \
+            -o "${_pw}" 2>/dev/null || _pw=""
+    fi
+    if [ -n "${_pw}" ] \
+        && _pyprefix="$("${_pw}" -c "import sys; print(sys.prefix)" 2>/dev/null)" \
+        && [ -n "${_pyprefix}" ] && [ -x "${_pyprefix}/bin/python3" ]; then
+        PYTHON_HOME="${_pyprefix}"
+    fi
+    [ "${_pw}" = "/tmp/bazelport_python_probe.$$" ] && rm -f "${_pw}" 2>/dev/null
+    unset _pw
+fi
+if [ -n "${PYTHON_HOME:-}" ] && [ -x "${PYTHON_HOME}/bin/python3" ]; then
+    export PYTHON_HOME
+fi
+# NOTE: the HARD PYTHON_HOME check runs inside zopen_bazel_make — at source
+# time (inside the EBCDIC zopen-build harness, before zopen sets up the
+# dependency environments) the probe compile may not be possible.
+export PYTHON_HOME
 
 # --- ZOPEN_ROOTFS: env, else derive from zopen's own ZOPEN_OLD_PATH, else
 # --- common locations. Must provide GNU tools in usr/local/altbin.
@@ -313,12 +328,271 @@ _zopen_pkg ZLIB_HOME zlib
 _zopen_pkg OPENSSL_HOME openssl
 unset -f _zopen_pkg
 
+# ============================================================================
+# local_repos provisioning: constructs ${BAZELPORT_ROOT}/local_repos from
+# vendored tarballs (deps/), zopen system installs, the dist extract and a
+# few generated artifacts. Everything the no-network build needs; nothing
+# unnecessary is stored in the repository.
+#
+# Sources:
+#   deps/*.tar.gz                    vendored upstream rule repos (no network)
+#   deps/files/                      hand-written wrappers/scripts/templates
+#   ${GRPC_HOME}, ${ZOPEN_ROOTFS}    zopen gRPC / protobuf / sqlite installs
+#   ./third_party, ./derived         the extracted bazel dist (zopen build
+#                                    extracts + patches it before make runs)
+# ============================================================================
+zopen_provision_local_repos() {
+    _repos="${BAZELPORT_ROOT}/local_repos"
+    _deps="${BAZELPORT_ROOT}/deps"
+    _files="${_deps}/files"
+    _GZIP="${ZOPEN_ROOTFS}/usr/local/bin/gzip"
+
+    if [ -f "${_repos}/.provisioned" ]; then
+        return 0
+    fi
+    echo "Provisioning local_repos (first run on this clone)..."
+    mkdir -p "${_repos}"
+
+    # --- 1. vendored rule repos -------------------------------------------
+    for _t in "${_deps}"/*.tar.gz; do
+        [ -e "$_t" ] || continue
+        # protobuf-includes is extracted into com_google_protobuf below
+        [ "$(basename "$_t")" = "protobuf-includes.tar.gz" ] && continue
+        tar -I "${_GZIP}" -xf "$_t" -C "${_repos}" || {
+            echo "ERROR: failed to extract $_t" >&2; return 1; }
+    done
+
+    # --- 1b. pristine upstream rule repos downloaded from GitHub -----------
+    # (byte-identical to what the verified build used; the z/OS-patched and
+    # version-sensitive repos stay vendored in deps/)
+    _CURL="${ZOPEN_ROOTFS}/usr/local/bin/curl"
+    _dl() {  # $1=url $2=dest — download with retries
+        rm -f "$2"
+        _n=0
+        while [ $_n -lt 3 ]; do
+            _n=$((_n+1))
+            "${_CURL}" -sSL --retry 2 --max-time 300 -o "$2" "$1" 2>/dev/null
+            if [ $? -eq 0 ] && [ -s "$2" ]; then return 0; fi
+            rm -f "$2"
+            sleep $((_n*5))
+        done
+        echo "ERROR: download failed: $1" >&2
+        return 1
+    }
+    _dlrepo() {  # $1=name $2=url $3=strip_prefix
+        [ -d "${_repos}/$1" ] && return 0
+        echo "  downloading $1 ..."
+        _dl "$2" "/tmp/bazelport_$1.tgz" || return 1
+        rm -rf "/tmp/bazelport_x_$1" && mkdir -p "/tmp/bazelport_x_$1"
+        tar -I "${_GZIP}" -xf "/tmp/bazelport_$1.tgz" -C "/tmp/bazelport_x_$1" || return 1
+        # cp -R (NOT mv: cross-filesystem mv on z/OS drops files with
+        # FSUM8985 uid/gid warnings)
+        mkdir -p "${_repos}/$1"
+        if [ -d "/tmp/bazelport_x_$1/$3" ]; then
+            cp -R "/tmp/bazelport_x_$1/$3/." "${_repos}/$1/" || return 1
+        else
+            cp -R "/tmp/bazelport_x_$1/." "${_repos}/$1/" || return 1
+        fi
+        rm -rf "/tmp/bazelport_x_$1" "/tmp/bazelport_$1.tgz"
+    }
+    _dlrepo bazel_skylib \
+        https://github.com/bazelbuild/bazel-skylib/releases/download/1.6.1/bazel-skylib-1.6.1.tar.gz \
+        bazel-skylib-1.6.1 || return 1
+    _dlrepo rules_license \
+        https://github.com/bazelbuild/rules_license/releases/download/0.0.7/rules_license-0.0.7.tar.gz \
+        rules_license-0.0.7 || return 1
+    _dlrepo rules_pkg \
+        https://github.com/bazelbuild/rules_pkg/releases/download/0.9.1/rules_pkg-0.9.1.tar.gz \
+        rules_pkg-0.9.1 || return 1
+    _dlrepo rules_jvm_external \
+        https://github.com/bazelbuild/rules_jvm_external/archive/refs/tags/6.0.tar.gz \
+        rules_jvm_external-6.0 || return 1
+    # blake3: upstream release + local BUILD/WORKSPACE wrappers
+    _dlrepo blake3 \
+        https://github.com/BLAKE3-team/BLAKE3/archive/refs/tags/1.5.1.tar.gz \
+        BLAKE3-1.5.1 || return 1
+    cp "${_files}/blake3/BUILD" "${_files}/blake3/WORKSPACE" "${_repos}/blake3/"
+    # stardoc: upstream release + trimmed WORKSPACE (upstream's includes
+    # INTERNAL-ONLY dev dependencies that need network)
+    _dlrepo stardoc \
+        https://github.com/bazelbuild/stardoc/archive/refs/tags/0.5.6.tar.gz \
+        stardoc-0.5.6 || return 1
+    cp "${_files}/stardoc/WORKSPACE" "${_repos}/stardoc/WORKSPACE"
+    unset -f _dl _dlrepo
+
+    # --- 2. gRPC wrapper: zopen headers + lib symlinks + plugin wrapper ---
+    _g="${_repos}/com_github_grpc_grpc"
+    mkdir -p "${_g}/includes" "${_g}/lib" "${_g}/src/compiler"
+    cp -R "${GRPC_HOME}/include/grpc" "${_g}/includes/grpc"
+    cp -R "${GRPC_HOME}/include/grpcpp" "${_g}/includes/grpcpp"
+    # old-layout headers (grpc++), from the zopen merged include tree
+    cp -R "${ZOPEN_ROOTFS}/usr/local/include/grpc++" "${_g}/includes/grpc++"
+    for _a in libgrpc++_unsecure.a libgrpc_unsecure.a libgpr.a \
+              libaddress_sorting.a libcares.a libgrpc.a libgrpc_plugin_support.a; do
+        ln -sf "${GRPC_HOME}/lib/${_a}" "${_g}/lib/${_a}"
+    done
+    cp "${_files}/com_github_grpc_grpc/BUILD.in" "${_g}/BUILD.in"
+    cp "${_files}/com_github_grpc_grpc/WORKSPACE" "${_g}/WORKSPACE"
+    cp "${_files}/com_github_grpc_grpc/src/compiler/BUILD" "${_g}/src/compiler/BUILD"
+    cp "${_files}/com_github_grpc_grpc/src/compiler/grpc_cpp_plugin.sh" "${_g}/src/compiler/grpc_cpp_plugin.sh"
+    chmod +x "${_g}/src/compiler/grpc_cpp_plugin.sh"
+
+    # --- 3. protobuf wrapper: vendored headers (must match the linked
+    #        libprotobuf.a, which comes from the zopen grpc package — the
+    #        merged zopen include tree can drift), dist jars, java BUILD
+    #        stubs, protoc wrapper -------------------------------------------
+    _p="${_repos}/com_google_protobuf"
+    mkdir -p "${_p}/jars" "${_p}/java/core" "${_p}/java/util" "${_p}/lib"
+    tar -I "${_GZIP}" -xf "${_deps}/protobuf-includes.tar.gz" -C "${_p}"
+    # old-layout headers: include_grpc = zopen's grpc/*.h tree,
+    # include_grpcxx = zopen's grpc++/*.h tree (needed by generated code)
+    mkdir -p "${_p}/include_grpc" "${_p}/include_grpcxx"
+    cp -R "${ZOPEN_ROOTFS}/usr/local/include/grpc/." "${_p}/include_grpc/"
+    cp -R "${ZOPEN_ROOTFS}/usr/local/include/grpc++/." "${_p}/include_grpcxx/"
+    # protobuf java jars ship with the dist (derived/jars)
+    for _j in derived/jars/protobuf~/java/core/libcore.jar \
+              derived/jars/protobuf~/java/core/liblite.jar \
+              derived/jars/protobuf~/java/util/libutil.jar; do
+        [ -f "$_j" ] && cp "$_j" "${_p}/jars/" || {
+            echo "ERROR: missing dist jar: $_j" >&2; return 1; }
+    done
+    ln -sf ../../jars/libcore.jar "${_p}/java/core/libcore.jar"
+    ln -sf ../../jars/libutil.jar "${_p}/java/util/libutil.jar"
+    # libprotobuf.a from the zopen merged lib (symlink to the grpc pkg's copy)
+    ln -sf "${ZOPEN_ROOTFS}/usr/local/lib/libprotobuf.a" "${_p}/lib/libprotobuf.a"
+    # protoc binary from the zopen grpc package
+    ln -sf "${GRPC_HOME}/bin/protoc-31.0.0" "${_p}/protoc.bin"
+    cp "${_files}/com_google_protobuf/BUILD.in" "${_p}/BUILD.in"
+    cp "${_files}/com_google_protobuf/protoc_wrapper.sh.in" "${_p}/protoc_wrapper.sh.in"
+    cp "${_files}/com_google_protobuf/WORKSPACE" "${_p}/WORKSPACE"
+    cp "${_files}/com_google_protobuf/java/core.BUILD" "${_p}/java/core/BUILD"
+    cp "${_files}/com_google_protobuf/java/util.BUILD" "${_p}/java/util/BUILD"
+
+    # --- 4. sqlite3 wrapper -------------------------------------------------
+    _s="${_repos}/sqlite3"
+    mkdir -p "${_s}/include"
+    cp "${SQLITE_HOME}/include/sqlite3.h" "${SQLITE_HOME}/include/sqlite3ext.h" "${_s}/include/" 2>/dev/null || {
+        echo "ERROR: sqlite headers not found in ${SQLITE_HOME}" >&2; return 1; }
+    cp "${_files}/sqlite3/BUILD.in" "${_s}/BUILD.in"
+    cp "${_files}/sqlite3/WORKSPACE" "${_s}/WORKSPACE"
+
+    # --- 5. zstd-jni wrapper: dist jar + BUILD -----------------------------
+    _z="${_repos}/zstd-jni"
+    mkdir -p "${_z}"
+    cp derived/jars/zstd-jni~/libzstd-jni.jar "${_z}/" || {
+        echo "ERROR: missing derived/jars/zstd-jni~/libzstd-jni.jar" >&2; return 1; }
+    cp "${_files}/zstd-jni/BUILD" "${_z}/BUILD"
+    cp "${_files}/zstd-jni/WORKSPACE" "${_z}/WORKSPACE"
+
+    # --- 6. googleapis / remoteapis: copied from the patched dist extract ---
+    for _r in googleapis remoteapis; do
+        if [ -d "third_party/${_r}" ]; then
+            mkdir -p "${_repos}/${_r}"
+            cp -R "third_party/${_r}/." "${_repos}/${_r}/"
+        else
+            echo "ERROR: third_party/${_r} not found (run from the dist extract)" >&2
+            return 1
+        fi
+    done
+
+    # --- 7. cc tool wrapper + empty stub archives ---------------------------
+    mkdir -p "${_repos}/zos_cc_tools" "${_repos}/zos_stub_libs"
+    cp "${_files}/zos_cc_tools/zos_cc" "${_repos}/zos_cc_tools/zos_cc"
+    chmod +x "${_repos}/zos_cc_tools/zos_cc"
+    cp "${_files}/zos_stub_libs/stub_dummy.c" "${_repos}/zos_stub_libs/stub_dummy.c"
+    ( cd "${_repos}/zos_stub_libs" \
+      && /bin/env _CEE_RUNOPTS='POSIX(ON)' "$(dirname "$COMPILER_PATH")/clang" -c stub_dummy.c -o stub_dummy.o \
+      && ar r librt.a stub_dummy.o && ar r libdl.a stub_dummy.o && ar r libpthread.a stub_dummy.o )
+
+    # --- 8. python3 wrapper (LIBPATH-setting program object) ----------------
+    _w="${_repos}/python_wrapper"
+    mkdir -p "${_w}"
+    cp "${_files}/python_wrapper/python3_wrapper.c" "${_w}/python3_wrapper.c"
+    /bin/env _CEE_RUNOPTS='POSIX(ON)' "$(dirname "$COMPILER_PATH")/clang" -D_ALL_SOURCE=1 -fzos-le-char-mode=ascii \
+        -O2 "${_w}/python3_wrapper.c" -o "${_w}/python3" || {
+        echo "ERROR: failed to compile python3 wrapper" >&2; return 1; }
+
+    # --- 9. tag everything provisioned (ASCII text / binary) ----------------
+    find "${_repos}" -type f -exec /bin/chtag -b {} + 2>/dev/null
+    find "${_repos}" -type f \
+        \! -name "*.jar" \! -name "*.a" \! -name "*.so" \! -name "*.o" \
+        \! -name "*.gz" \! -name "python3" \
+        -exec /bin/chtag -tc ISO8859-1 {} + 2>/dev/null
+
+    touch "${_repos}/.provisioned"
+    echo "local_repos provisioning complete."
+    unset _repos _deps _files _g _p _s _z _w _t _a _j _r
+}
+
 zopen_bazel_make() {
     echo "==== Bazel Full Build (Stage 1 + Stage 2) ===="
 
     # If zopen trapped us in the .bazelci subfolder, step out to the real root
     if [ ! -f "compile.sh" ] && [ -f "../compile.sh" ]; then
         cd ..
+    fi
+
+    # --- Apply the z/OS patches to the dist extract (zopen build does NOT
+    # --- do this itself: a fresh git clone leaves the .patch files untagged,
+    # --- which breaks the EBCDIC patch tooling; we tag them first).
+    # --- Idempotent: skipped when the extract is already patched.
+    if ! grep -q "z/OS" compile.sh 2>/dev/null; then
+        echo "Applying stable-patches to the dist extract..."
+        find "${BAZELPORT_ROOT}/stable-patches" -name "*.patch" -type f \
+            -exec /bin/chtag -tc ISO8859-1 {} + 2>/dev/null
+        # patch binary: zopen patch package (program object; do not rely on
+        # PATH resolution — broken PATH entries break execvp in GNU tools)
+        _patchbin="${PATCH_BIN:-}"
+        if [ -z "${_patchbin}" ] || [ ! -x "${_patchbin}" ]; then
+            _patchbin="$(ls "${ZOPEN_ROOTFS}"/usr/local/zopen/patch/*/bin/patch 2>/dev/null | head -1)"
+        fi
+        if [ -z "${_patchbin}" ]; then
+            echo "ERROR: cannot locate the zopen patch binary" >&2
+            return 1
+        fi
+        for _p in "${BAZELPORT_ROOT}"/stable-patches/*.patch; do
+            [ -e "$_p" ] || continue
+            # _CEE_RUNOPTS override: the zopen-build harness runs with
+            # FILETAG(AUTOCVT,AUTOTAG) which corrupts patch's file writes;
+            # each exec'd process reads _CEE_RUNOPTS anew, so override it.
+            /bin/env _CEE_RUNOPTS='POSIX(ON)' "${_patchbin}" -p1 --silent --force \
+                < "$_p" >/dev/null 2>&1 || {
+                echo "ERROR: failed to apply $(basename "$_p")" >&2
+                return 1
+            }
+        done
+        unset _p _patchbin
+    fi
+
+    # --- Tag the vendored deps (a fresh git clone leaves all files
+    # --- untagged; clang/patch read untagged ASCII as EBCDIC garbage).
+    find "${BAZELPORT_ROOT}/deps" -type f -exec /bin/chtag -b {} + 2>/dev/null
+    find "${BAZELPORT_ROOT}/deps" -type f \! -name "*.tar.gz" \
+        -exec /bin/chtag -tc ISO8859-1 {} + 2>/dev/null
+
+    # HARD check: the Python SDK must be locatable now (the source-time
+    # probe is best-effort; the zopen-build harness cannot always run it).
+    # Re-probe here: our bash environment and PATH are now fully set up.
+    if [ -z "${PYTHON_HOME:-}" ] || [ ! -x "${PYTHON_HOME}/bin/python3" ]; then
+        _pw="${BAZELPORT_ROOT}/local_repos/python_wrapper/python3"
+        if [ ! -x "${_pw}" ] && [ -f "${BAZELPORT_ROOT}/deps/files/python_wrapper/python3_wrapper.c" ]; then
+            _pw="/tmp/bazelport_python_probe.$$"
+            /bin/env _CEE_RUNOPTS='POSIX(ON)' "${COMPILER_PATH}" -D_ALL_SOURCE=1 -fzos-le-char-mode=ascii -O2 \
+                "${BAZELPORT_ROOT}/deps/files/python_wrapper/python3_wrapper.c" \
+                -o "${_pw}" 2>/dev/null || _pw=""
+        fi
+        if [ -n "${_pw}" ] \
+            && _pyprefix="$("${_pw}" -c "import sys; print(sys.prefix)" 2>/dev/null)" \
+            && [ -x "${_pyprefix}/bin/python3" ]; then
+            PYTHON_HOME="${_pyprefix}"
+            export PYTHON_HOME
+        fi
+        [ "${_pw}" = "/tmp/bazelport_python_probe.$$" ] && rm -f "${_pw}" 2>/dev/null
+        unset _pw
+    fi
+    if [ -z "${PYTHON_HOME:-}" ] || [ ! -x "${PYTHON_HOME}/bin/python3" ]; then
+        echo "ERROR: PYTHON_HOME must point at the Python SDK (needs bin/python3, e.g. the IBM Open Enterprise SDK for Python)." >&2
+        return 1
     fi
 
     # python3 for build actions (build_tar wrappers, genrules). The wrapper
@@ -401,6 +675,9 @@ zopen_bazel_make() {
         done
         echo "Tree tagging complete."
     fi
+    # Provision local_repos on first use (fresh clone); idempotent.
+    zopen_provision_local_repos || return 1
+
     # Generate local_repos wrapper BUILD files from .in templates: they wrap
     # system-installed zopen artifacts, and BUILD files cannot read the
     # environment, so the paths are templated and substituted here.
@@ -444,12 +721,6 @@ zopen_bazel_make() {
         -e "s|@SQLITE_LIB@|${SQLITE_HOME}/lib/libsqlite3.a|g" \
         -e "s|@SQLITE_INC@|${SQLITE_HOME}/include|g"
     unset -f _tmpl
-    # WORKSPACE references local_repos via the relative path ../local_repos
-    # (correct when building in the .bazelci extract). When building from the
-    # port root itself, provide the same relative path via a symlink.
-    if [ -d "local_repos" ] && [ ! -e "../local_repos" ]; then
-        ln -sfn "$(basename "${BAZELPORT_ROOT}")/local_repos" "${BAZELPORT_ROOT}/../local_repos"
-    fi
 
     echo "Running FULL Bazel compile.sh in $(pwd)..."
     bash ./compile.sh
