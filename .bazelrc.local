@@ -1,5 +1,0 @@
-# z/OS C++ toolchain configuration - simplified
-build:zos --action_env=CC=/home/haritha/install_test/usr/lpp/IBM/oelcpp/v3r0/bin/clang
-build:zos --action_env=CXX=/home/haritha/install_test/usr/lpp/IBM/oelcpp/v3r0/bin/clang++
-build:zos --action_env=CPATH=/home/haritha/zopen_23may/zopen/usr/local/include
-build:zos --action_env=LIBRARY_PATH=/home/haritha/zopen_23may/zopen/usr/local/lib

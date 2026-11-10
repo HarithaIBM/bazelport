@@ -1,5 +1,4 @@
-log/
-log.DEV/
-log.STABLE/
-build/
-install/
+/local_repos/
+/log/
+/log.DEV/
+/log.STABLE/

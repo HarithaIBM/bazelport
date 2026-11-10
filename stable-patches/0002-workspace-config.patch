@@ -1,7 +1,5 @@
 diff --git a/.bazelrc b/.bazelrc
-old mode 100644
-new mode 100755
-index 89de37c..657fff6
+index 89de37c..657fff6 100644
 --- a/.bazelrc
 +++ b/.bazelrc
 @@ -92,3 +92,4 @@ test:ci-windows --test_env=JAVA_HOME
@@ -21,9 +19,7 @@ index 0000000..5319e42
 +build:zos --action_env=CPATH=/home/haritha/zopen_23may/zopen/usr/local/include
 +build:zos --action_env=LIBRARY_PATH=/home/haritha/zopen_23may/zopen/usr/local/lib
 diff --git a/BUILD b/BUILD
-old mode 100644
-new mode 100755
-index 1bc6dde..a500b04
+index 1bc6dde..a500b04 100644
 --- a/BUILD
 +++ b/BUILD
 @@ -150,6 +150,16 @@ filegroup(
@@ -73,9 +69,7 @@ index 49be7bd..0fbafa8 100644
  
  register_toolchains("//src/main/res:empty_rc_toolchain")
 diff --git a/MODULE.bazel.lock b/MODULE.bazel.lock
-old mode 100644
-new mode 100755
-index 8b2cc70..07b5d9f
+index 8b2cc70..07b5d9f 100644
 --- a/MODULE.bazel.lock
 +++ b/MODULE.bazel.lock
 @@ -118,5 +118,651 @@
@@ -732,10 +726,10 @@ index 8b2cc70..07b5d9f
 +  }
  }
 diff --git a/WORKSPACE b/WORKSPACE
-index 1f206fe..ffffdd0 100644
+index 1f206fe..12ae73c 100644
 --- a/WORKSPACE
 +++ b/WORKSPACE
-@@ -1,3 +1,179 @@
+@@ -1,3 +1,168 @@
 -# ================================================ #
 -# All dependencies have been moved to MODULE.Bazel #
 -# ================================================ #
@@ -758,17 +752,7 @@ index 1f206fe..ffffdd0 100644
 +# static libs + headers), same pattern as com_google_protobuf.
 +local_repository(
 +    name = "com_github_grpc_grpc",
-+    path = "/home/haritha/code/bazel-7.2.0/bazelport/local_repos/com_github_grpc_grpc",
-+)
-+
-+local_repository(
-+    name = "zlib",
-+    path = "/home/haritha/zopen_23may/zopen/usr/local/zopen/zlib",
-+)
-+
-+local_repository(
-+    name = "sqlite",
-+    path = "/home/haritha/zopen_23may/zopen/usr/local/zopen/sqlite",
++    path = "local_repos/com_github_grpc_grpc",
 +)
 +
 +# ---------------------------------------------------------------------------
@@ -776,7 +760,7 @@ index 1f206fe..ffffdd0 100644
 +# ---------------------------------------------------------------------------
 +local_repository(
 +    name = "com_google_protobuf",
-+    path = "/home/haritha/code/bazel-7.2.0/bazelport/local_repos/com_google_protobuf",
++    path = "local_repos/com_google_protobuf",
 +)
 +
 +# ---------------------------------------------------------------------------
@@ -784,29 +768,29 @@ index 1f206fe..ffffdd0 100644
 +# ---------------------------------------------------------------------------
 +local_repository(
 +    name = "rules_java",
-+    path = "/home/haritha/code/bazel-7.2.0/bazelport/local_repos/rules_java",
++    path = "local_repos/rules_java",
 +)
 +
 +# @bazel_tools maps @rules_java -> @rules_java_builtin (repo_mapping in the
 +# embedded tools.WORKSPACE), so the builtin repo must exist as well.
 +local_repository(
 +    name = "rules_java_builtin",
-+    path = "/home/haritha/code/bazel-7.2.0/bazelport/local_repos/rules_java",
++    path = "local_repos/rules_java",
 +)
 +
 +local_repository(
 +    name = "bazel_skylib",
-+    path = "/home/haritha/code/bazel-7.2.0/bazelport/local_repos/bazel_skylib",
++    path = "local_repos/bazel_skylib",
 +)
 +
 +local_repository(
 +    name = "rules_cc",
-+    path = "/home/haritha/code/bazel-7.2.0/bazelport/local_repos/rules_cc",
++    path = "local_repos/rules_cc",
 +)
 +
 +local_repository(
 +    name = "rules_python",
-+    path = "/home/haritha/code/bazel-7.2.0/bazelport/local_repos/rules_python",
++    path = "local_repos/rules_python",
 +)
 +
 +# rules_python's internal config repo — normally created by its own WORKSPACE /
@@ -817,12 +801,12 @@ index 1f206fe..ffffdd0 100644
 +
 +local_repository(
 +    name = "rules_proto",
-+    path = "/home/haritha/code/bazel-7.2.0/bazelport/local_repos/rules_proto",
++    path = "local_repos/rules_proto",
 +)
 +
 +local_repository(
 +    name = "rules_pkg",
-+    path = "/home/haritha/code/bazel-7.2.0/bazelport/local_repos/rules_pkg",
++    path = "local_repos/rules_pkg",
 +)
 +
 +# buildozer: needed only as a FILE (buildozer.bzl) loaded by
@@ -830,34 +814,34 @@ index 1f206fe..ffffdd0 100644
 +# never executed in WORKSPACE mode (only bzlmod extensions/dist rules use it).
 +local_repository(
 +    name = "buildozer",
-+    path = "/home/haritha/code/bazel-7.2.0/bazelport/local_repos/buildozer",
++    path = "local_repos/buildozer",
 +)
 +
 +# rules_license: loaded by the root BUILD (license rule); local copy avoids
 +# the suffix http_archive path entirely.
 +local_repository(
 +    name = "rules_license",
-+    path = "/home/haritha/code/bazel-7.2.0/bazelport/local_repos/rules_license",
++    path = "local_repos/rules_license",
 +)
 +
 +# stardoc (io_bazel_skydoc): needed only as a FILE load from
 +# tools/build_defs/repo/BUILD (docs rule, never executed in our graph).
 +local_repository(
 +    name = "io_bazel_skydoc",
-+    path = "/home/haritha/code/bazel-7.2.0/bazelport/local_repos/stardoc",
++    path = "local_repos/stardoc",
 +)
 +
 +# The pre-resolved maven repository shipped in the dist (Stage-1 classpath),
 +# exposed under the apparent name the bazel sources use (@maven//:com_google_guava_guava ...).
 +local_repository(
 +    name = "maven",
-+    path = "/home/haritha/code/bazel-7.2.0/bazelport/.bazelci/derived/maven",
++    path = "derived/maven",
 +)
 +
 +# Required by derived/maven/BUILD (jvm_import rule).
 +local_repository(
 +    name = "rules_jvm_external",
-+    path = "/home/haritha/code/bazel-7.2.0/bazelport/local_repos/rules_jvm_external",
++    path = "local_repos/rules_jvm_external",
 +)
 +
 +# Vendored API proto repos — COPIES of third_party/{remoteapis,googleapis} so that
@@ -865,12 +849,12 @@ index 1f206fe..ffffdd0 100644
 +# (//third_party/remoteapis:...) do not cross a repository boundary.
 +local_repository(
 +    name = "remoteapis",
-+    path = "/home/haritha/code/bazel-7.2.0/bazelport/local_repos/remoteapis",
++    path = "local_repos/remoteapis",
 +)
 +
 +local_repository(
 +    name = "googleapis",
-+    path = "/home/haritha/code/bazel-7.2.0/bazelport/local_repos/googleapis",
++    path = "local_repos/googleapis",
 +)
 +
 +# BLAKE3 (C library, portable build) — needed by //src/main/native:blake3_jni.
@@ -878,19 +862,19 @@ index 1f206fe..ffffdd0 100644
 +# template whose default branch compiles portable C only (no SIMD) — correct for s390x.
 +local_repository(
 +    name = "blake3",
-+    path = "/home/haritha/code/bazel-7.2.0/bazelport/local_repos/blake3",
++    path = "local_repos/blake3",
 +)
 +
 +# zstd-jni — prebuilt jar shipped in the dist (derived/jars).
 +local_repository(
 +    name = "zstd-jni",
-+    path = "/home/haritha/code/bazel-7.2.0/bazelport/local_repos/zstd-jni",
++    path = "local_repos/zstd-jni",
 +)
 +
 +# sqlite3 — system zopen install (headers + static lib), linked not compiled.
 +local_repository(
 +    name = "sqlite3",
-+    path = "/home/haritha/code/bazel-7.2.0/bazelport/local_repos/sqlite3",
++    path = "local_repos/sqlite3",
 +)
 +
 +# platforms 0.0.9 (from dist repository_cache; includes cpu:s390x)
@@ -908,7 +892,6 @@ index 1f206fe..ffffdd0 100644
 +
 +local_java_repository(
 +    name = "local_jdk",
-+    java_home = "/home/haritha/dhjava/J21.0_64",
 +    build_file_content = JDK_BUILD_TEMPLATE,
 +)
 +
