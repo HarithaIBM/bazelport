@@ -195,6 +195,37 @@ export ZOPEN_INSTALL_CMD="mkdir -p ${ZOPEN_INSTALL_DIR}/bin && cp output/bazel $
 export ZOPEN_CONFIGURE="skip"
 export ZOPEN_MAKE="zopen_bazel_make"
 export ZOPEN_INSTALL="zopen_bazel_install"
+
+# ============================================================================
+# zopen framework bug workaround — MUST run at source time (before zopen's
+# extract step). zopen-build's extract cleanup is `rm -rf "${noext}/*"` —
+# the quoted glob removes nothing — and it runs `unzip` without `-o`, so a
+# re-run after a failed/interrupted attempt finds leftover files and unzip
+# waits FOREVER on an invisible overwrite prompt (stdout captured, stderr
+# discarded). Clean previous-extract state here so every run starts fresh
+# (the same guarantee Jenkins gets from deleteDir()).
+# ============================================================================
+if [ -f "./buildenv" ] && [ -d "./stable-patches" ]; then
+    # we are in the port root at zopen build startup
+    if [ -d "./.bazelci" ]; then
+        echo "note: removing stale .bazelci (zopen extract-cleanup workaround)"
+        rm -rf "./.bazelci"
+    fi
+    # leftover dist-extract at the port root (from an interrupted run):
+    # compile.sh+src exist only after an extract — the repo itself has neither
+    if [ -f "./compile.sh" ] && [ -d "./src/main/cpp" ]; then
+        echo "note: removing stale dist extract at port root"
+        rm -rf ./src ./tools ./scripts ./third_party ./derived ./examples \
+              ./site ./zos_toolchain ./pre_generated_protos ./local_repos \
+              ./compile.sh ./WORKSPACE ./WORKSPACE.bzlmod ./MODULE.bazel \
+              ./MODULE.bazel.lock ./BUILD ./create_rules_java_builtin.sh \
+              ./bazel_downloader.cfg ./AUTHORS ./CHANGELOG.md ./CODEOWNERS \
+              ./CODE_OF_CONDUCT.md ./CONTRIBUTORS ./LICENSE ./README.md \
+              ./SECURITY.md ./requirements.txt ./extensions.bzl ./repositories.bzl \
+              ./workspace_deps.bzl ./distdir.bzl ./distdir_deps.bzl \
+              ./maven_install.json ./rbe_extension.bzl ./combine_distfiles.py
+    fi
+fi
 # ============================================================================
 # Toolchain locations — everything is configurable via environment variables.
 # No hardcoded user paths. Values are auto-detected where possible; the build
