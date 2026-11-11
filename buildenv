@@ -580,16 +580,19 @@ zopen_bazel_make() {
         echo "Applying stable-patches to the dist extract..."
         find "${BAZELPORT_ROOT}/stable-patches" -name "*.patch" -type f \
             -exec /bin/chtag -tc ISO8859-1 {} + 2>/dev/null
-        # patch binary: zopen patch package (program object; do not rely on
-        # PATH resolution — broken PATH entries break execvp in GNU tools)
+        # patch binary: use $PATCH_BIN if set; otherwise whatever 'patch'
+        # resolves to on PATH. Echo which one we picked so the build log
+        # shows it.
         _patchbin="${PATCH_BIN:-}"
         if [ -z "${_patchbin}" ] || [ ! -x "${_patchbin}" ]; then
-            _patchbin="$(ls "${ZOPEN_ROOTFS}"/usr/local/zopen/patch/*/bin/patch 2>/dev/null | head -1)"
+            _patchbin="$(command -v patch 2>/dev/null)"
         fi
-        if [ -z "${_patchbin}" ]; then
-            echo "ERROR: cannot locate the zopen patch binary" >&2
+        if [ -z "${_patchbin}" ] || [ ! -x "${_patchbin}" ]; then
+            echo "ERROR: cannot locate a patch binary" >&2
+            echo "       hint: put zopen's patch on PATH or export PATCH_BIN=/path/to/patch" >&2
             return 1
         fi
+        echo "Using patch binary: ${_patchbin}"
         for _p in "${BAZELPORT_ROOT}"/stable-patches/*.patch; do
             [ -e "$_p" ] || continue
             # _CEE_RUNOPTS override: the zopen-build harness runs with
