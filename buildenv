@@ -616,6 +616,35 @@ zopen_bazel_make() {
     # HARD check: the Python SDK must be locatable now (the source-time
     # probe is best-effort; the zopen-build harness cannot always run it).
     # Re-probe here: our bash environment and PATH are now fully set up.
+
+    # --- Fix up COMPILER_PATH first (the probe below needs it): accept a
+    # --- bare compiler path or a bin/ directory containing clang.
+    if [ -n "${COMPILER_PATH:-}" ] && [ ! -x "${COMPILER_PATH}" ] && [ -d "${COMPILER_PATH}" ]; then
+        _clangbin="$(ls "${COMPILER_PATH}"/clang "${COMPILER_PATH}"/clang-* 2>/dev/null | head -1)"
+        [ -n "${_clangbin}" ] && COMPILER_PATH="${_clangbin}" && export COMPILER_PATH
+        unset _clangbin
+    fi
+    if [ -z "${COMPILER_PATH:-}" ] || [ ! -x "${COMPILER_PATH}" ]; then
+        _clangbin="$(command -v clang 2>/dev/null)"
+        [ -n "${_clangbin}" ] && COMPILER_PATH="${_clangbin}" && export COMPILER_PATH
+        unset _clangbin
+    fi
+
+    # --- Derive PYTHON_HOME from the python3/python on PATH when not set:
+    # --- PYTHON_HOME is the SDK root (bin/python3, lib/, ...).
+    if [ -z "${PYTHON_HOME:-}" ] || [ ! -x "${PYTHON_HOME}/bin/python3" ]; then
+        _pybin="$(command -v python3 2>/dev/null)"
+        [ -z "${_pybin}" ] && _pybin="$(command -v python 2>/dev/null)"
+        if [ -n "${_pybin}" ]; then
+            _pyprefix="$(dirname "$(dirname "${_pybin}")")"
+            if [ -x "${_pyprefix}/bin/python3" ]; then
+                PYTHON_HOME="${_pyprefix}"
+                export PYTHON_HOME
+            fi
+            unset _pyprefix
+        fi
+        unset _pybin
+    fi
     if [ -z "${PYTHON_HOME:-}" ] || [ ! -x "${PYTHON_HOME}/bin/python3" ]; then
         _pw="${BAZELPORT_ROOT}/local_repos/python_wrapper/python3"
         if [ ! -x "${_pw}" ] && [ -f "${BAZELPORT_ROOT}/deps/files/python_wrapper/python3_wrapper.c" ]; then
