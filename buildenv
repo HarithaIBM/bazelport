@@ -16,7 +16,7 @@ export ZOPEN_BUILD_LINE="STABLE"
 
 ## Required IF ZOPEN_BUILD_LINE='STABLE'
 export ZOPEN_STABLE_URL="https://github.com/bazelbuild/bazel/releases/download/7.2.0/bazel-7.2.0-dist.zip"  # Specify the stable build URL (either git or tarball)
-export ZOPEN_STABLE_DEPS="check_java check_python zip unzip bash patch" # Specify the stable build dependencies.
+export ZOPEN_STABLE_DEPS="check_java check_python zip unzip bash patch grpc" # Specify the stable build dependencies.
 
 ## Required IF ZOPEN_BUILD_LINE='DEV'
 export ZOPEN_DEV_URL="https://github.com/bazelbuild/bazel.git"   # Specify the dev build URL
