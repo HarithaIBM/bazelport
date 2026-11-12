@@ -342,21 +342,43 @@ if [ -z "${ZOPEN_ROOTFS}" ] || [ ! -x "${ZOPEN_ROOTFS}/usr/local/altbin/grep" ];
 fi
 export ZOPEN_ROOTFS
 
+# --- zopen roots: $ZOPEN_ROOTFS plus any other zopen installs discovered
+# --- from PATH entries of the form <root>/usr/local/{,alt}bin (machines
+# --- can have zopen split across multiple roots)
+_zopen_roots() {
+    printf '%s\n' "${ZOPEN_ROOTFS:-}"
+    _saveIFS="${IFS}"; IFS=:
+    for _d in ${PATH}; do
+        case "${_d}" in
+            */usr/local/bin|*/usr/local/altbin)
+                _r="${_d%/usr/local/bin}"; _r="${_r%/usr/local/altbin}"
+                [ -n "${_r}" ] && [ -d "${_r}/usr/local/zopen" ] && printf '%s\n' "${_r}"
+                ;;
+        esac
+    done
+    IFS="${_saveIFS}"; unset _d _r _saveIFS
+}
+
 # --- zopen package dirs: env, else auto-detect (single-version glob)
 _zopen_pkg() {  # $1 = env var name, $2 = package name
     _var="$1"; _pkg="$2"
     if [ -z "${!_var:-}" ] || [ ! -d "${!_var}" ]; then
         # prefer the active (unversioned) install symlink; else the newest
-        # versioned .zos directory
+        # versioned .zos directory — across all discovered zopen roots
         _hit=""
-        [ -d "${ZOPEN_ROOTFS}/usr/local/zopen/${_pkg}/${_pkg}" ] && \
-            _hit="${ZOPEN_ROOTFS}/usr/local/zopen/${_pkg}/${_pkg}"
-        if [ -z "$_hit" ]; then
-            _hit="$(ls -d "${ZOPEN_ROOTFS}/usr/local/zopen/${_pkg}/"*.zos 2>/dev/null | sort -V | tail -1)"
-        fi
-        if [ -n "$_hit" ]; then
+        for _root in $(_zopen_roots); do
+            [ -n "${_root}" ] || continue
+            [ -d "${_root}/usr/local/zopen/${_pkg}/${_pkg}" ] && {
+                _hit="${_root}/usr/local/zopen/${_pkg}/${_pkg}"; break; }
+            _v="$(ls -d "${_root}/usr/local/zopen/${_pkg}/"*.zos 2>/dev/null | sort -V | tail -1)"
+            [ -n "${_v}" ] && { _hit="${_v}"; break; }
+        done
+        if [ -n "${_hit}" ]; then
             eval "export $_var=\"\$_hit\""
+        else
+            echo "WARNING: cannot locate zopen package '${_pkg}' in any known root (set ${_var} or install it)" >&2
         fi
+        unset _v _root _hit
     else
         export "$_var"
     fi
@@ -461,12 +483,23 @@ zopen_provision_local_repos() {
     unset -f _dl _dlrepo
 
     # --- 2. gRPC wrapper: zopen headers + lib symlinks + plugin wrapper ---
+    if [ -z "${GRPC_HOME:-}" ] || [ ! -d "${GRPC_HOME}/include" ]; then
+        echo "ERROR: GRPC_HOME is not set/valid — install the zopen grpc package or export GRPC_HOME" >&2
+        return 1
+    fi
     _g="${_repos}/com_github_grpc_grpc"
     mkdir -p "${_g}/includes" "${_g}/lib" "${_g}/src/compiler"
     cp -R "${GRPC_HOME}/include/grpc" "${_g}/includes/grpc"
     cp -R "${GRPC_HOME}/include/grpcpp" "${_g}/includes/grpcpp"
-    # old-layout headers (grpc++), from the zopen merged include tree
-    cp -R "${ZOPEN_ROOTFS}/usr/local/include/grpc++" "${_g}/includes/grpc++"
+    # old-layout headers (grpc++): prefer the zopen merged include tree,
+    # fall back to the grpc package's own include dir; warn if absent
+    _gi="${ZOPEN_ROOTFS}/usr/local/include/grpc++"
+    [ -d "${_gi}" ] || _gi="${GRPC_HOME}/include/grpc++"
+    if [ -d "${_gi}" ]; then
+        cp -R "${_gi}" "${_g}/includes/grpc++"
+    else
+        echo "WARNING: no old-layout grpc++ headers found; code including <grpc++/...> may fail" >&2
+    fi
     for _a in libgrpc++_unsecure.a libgrpc_unsecure.a libgpr.a \
               libaddress_sorting.a libcares.a libgrpc.a libgrpc_plugin_support.a; do
         ln -sf "${GRPC_HOME}/lib/${_a}" "${_g}/lib/${_a}"
@@ -485,10 +518,20 @@ zopen_provision_local_repos() {
     mkdir -p "${_p}/jars" "${_p}/java/core" "${_p}/java/util" "${_p}/lib"
     tar -I "${_GZIP}" -xf "${_deps}/protobuf-includes.tar.gz" -C "${_p}"
     # old-layout headers: include_grpc = zopen's grpc/*.h tree,
-    # include_grpcxx = zopen's grpc++/*.h tree (needed by generated code)
+    # include_grpcxx = zopen's grpc++/*.h tree (needed by generated code);
+    # fall back to the grpc package's own include dir when the merged
+    # zopen include tree lacks them
     mkdir -p "${_p}/include_grpc" "${_p}/include_grpcxx"
-    cp -R "${ZOPEN_ROOTFS}/usr/local/include/grpc/." "${_p}/include_grpc/"
-    cp -R "${ZOPEN_ROOTFS}/usr/local/include/grpc++/." "${_p}/include_grpcxx/"
+    _gi="${ZOPEN_ROOTFS}/usr/local/include/grpc"
+    [ -d "${_gi}" ] || _gi="${GRPC_HOME}/include/grpc"
+    cp -R "${_gi}/." "${_p}/include_grpc/"
+    _gi="${ZOPEN_ROOTFS}/usr/local/include/grpc++"
+    [ -d "${_gi}" ] || _gi="${GRPC_HOME}/include/grpc++"
+    if [ -d "${_gi}" ]; then
+        cp -R "${_gi}/." "${_p}/include_grpcxx/"
+    else
+        echo "WARNING: no grpc++ old-layout headers for protobuf wrapper" >&2
+    fi
     # protobuf java jars ship with the dist (derived/jars)
     for _j in derived/jars/protobuf~/java/core/libcore.jar \
               derived/jars/protobuf~/java/core/liblite.jar \
