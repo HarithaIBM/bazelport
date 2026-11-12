@@ -342,43 +342,24 @@ if [ -z "${ZOPEN_ROOTFS}" ] || [ ! -x "${ZOPEN_ROOTFS}/usr/local/altbin/grep" ];
 fi
 export ZOPEN_ROOTFS
 
-# --- zopen roots: $ZOPEN_ROOTFS plus any other zopen installs discovered
-# --- from PATH entries of the form <root>/usr/local/{,alt}bin (machines
-# --- can have zopen split across multiple roots)
-_zopen_roots() {
-    printf '%s\n' "${ZOPEN_ROOTFS:-}"
-    _saveIFS="${IFS}"; IFS=:
-    for _d in ${PATH}; do
-        case "${_d}" in
-            */usr/local/bin|*/usr/local/altbin)
-                _r="${_d%/usr/local/bin}"; _r="${_r%/usr/local/altbin}"
-                [ -n "${_r}" ] && [ -d "${_r}/usr/local/zopen" ] && printf '%s\n' "${_r}"
-                ;;
-        esac
-    done
-    IFS="${_saveIFS}"; unset _d _r _saveIFS
-}
-
-# --- zopen package dirs: env, else auto-detect (single-version glob)
+# --- zopen package dirs: env, else auto-detect under ZOPEN_ROOTFS
+# --- (single-version glob)
 _zopen_pkg() {  # $1 = env var name, $2 = package name
     _var="$1"; _pkg="$2"
     if [ -z "${!_var:-}" ] || [ ! -d "${!_var}" ]; then
         # prefer the active (unversioned) install symlink; else the newest
-        # versioned .zos directory — across all discovered zopen roots
+        # versioned .zos directory
         _hit=""
-        for _root in $(_zopen_roots); do
-            [ -n "${_root}" ] || continue
-            [ -d "${_root}/usr/local/zopen/${_pkg}/${_pkg}" ] && {
-                _hit="${_root}/usr/local/zopen/${_pkg}/${_pkg}"; break; }
-            _v="$(ls -d "${_root}/usr/local/zopen/${_pkg}/"*.zos 2>/dev/null | sort -V | tail -1)"
-            [ -n "${_v}" ] && { _hit="${_v}"; break; }
-        done
-        if [ -n "${_hit}" ]; then
+        [ -d "${ZOPEN_ROOTFS}/usr/local/zopen/${_pkg}/${_pkg}" ] && \
+            _hit="${ZOPEN_ROOTFS}/usr/local/zopen/${_pkg}/${_pkg}"
+        if [ -z "$_hit" ]; then
+            _hit="$(ls -d "${ZOPEN_ROOTFS}/usr/local/zopen/${_pkg}/"*.zos 2>/dev/null | sort -V | tail -1)"
+        fi
+        if [ -n "$_hit" ]; then
             eval "export $_var=\"\$_hit\""
         else
-            echo "WARNING: cannot locate zopen package '${_pkg}' in any known root (set ${_var} or install it)" >&2
+            echo "WARNING: cannot locate zopen package '${_pkg}' under ZOPEN_ROOTFS (set ${_var} or install it)" >&2
         fi
-        unset _v _root _hit
     else
         export "$_var"
     fi
