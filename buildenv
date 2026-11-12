@@ -697,6 +697,26 @@ zopen_bazel_make() {
     fi
     unset -f _cc_ok 2>/dev/null
 
+    # --- Derive JAVA_HOME from java/javac on PATH when not set or not a
+    # --- full JDK: the bootstrap compile (JavacBootstrap) needs bin/javac.
+    if [ -z "${JAVA_HOME:-}" ] || [ ! -x "${JAVA_HOME}/bin/javac" ]; then
+        _jbin="$(command -v javac 2>/dev/null)"
+        [ -z "${_jbin}" ] && _jbin="$(command -v java 2>/dev/null)"
+        if [ -n "${_jbin}" ]; then
+            _jhome="$(cd "$(dirname "${_jbin}")/.." && pwd)"
+            if [ -x "${_jhome}/bin/javac" ]; then
+                JAVA_HOME="${_jhome}"
+                export JAVA_HOME
+            fi
+            unset _jhome
+        fi
+        unset _jbin
+    fi
+    if [ -z "${JAVA_HOME:-}" ] || [ ! -x "${JAVA_HOME}/bin/javac" ]; then
+        echo "ERROR: JAVA_HOME must point at a JDK (needs bin/javac), e.g. the IBM Semeru z/OS JDK." >&2
+        return 1
+    fi
+
     # --- Derive PYTHON_HOME from the python3/python on PATH when not set:
     # --- PYTHON_HOME is the SDK root (bin/python3, lib/, ...).
     if [ -z "${PYTHON_HOME:-}" ] || [ ! -x "${PYTHON_HOME}/bin/python3" ]; then
