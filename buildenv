@@ -580,15 +580,27 @@ zopen_bazel_make() {
         echo "Applying stable-patches to the dist extract..."
         find "${BAZELPORT_ROOT}/stable-patches" -name "*.patch" -type f \
             -exec /bin/chtag -tc ISO8859-1 {} + 2>/dev/null
-        # patch binary: use $PATCH_BIN if set; otherwise whatever 'patch'
-        # resolves to on PATH. Echo which one we picked so the build log
-        # shows it.
+        # patch binary: use $PATCH_BIN if set; otherwise search PATH for
+        # 'patch', SKIPPING the USS /bin and /usr/bin patch (FSUM patch is
+        # known-broken for these patches: fails on 0004+). Echo which one
+        # we picked so the build log shows it.
         _patchbin="${PATCH_BIN:-}"
         if [ -z "${_patchbin}" ] || [ ! -x "${_patchbin}" ]; then
-            _patchbin="$(command -v patch 2>/dev/null)"
+            _saveIFS="${IFS}"
+            IFS=:
+            for _d in ${PATH}; do
+                [ -n "${_d}" ] && [ -x "${_d}/patch" ] || continue
+                case "${_d}" in
+                    /bin|/usr/bin) continue ;;
+                esac
+                _patchbin="${_d}/patch"
+                break
+            done
+            IFS="${_saveIFS}"
+            unset _d _saveIFS
         fi
         if [ -z "${_patchbin}" ] || [ ! -x "${_patchbin}" ]; then
-            echo "ERROR: cannot locate a patch binary" >&2
+            echo "ERROR: cannot locate a usable patch binary (USS /bin patch is not sufficient)" >&2
             echo "       hint: put zopen's patch on PATH or export PATCH_BIN=/path/to/patch" >&2
             return 1
         fi
