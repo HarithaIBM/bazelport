@@ -6,8 +6,11 @@
 # C++). Everything else (link actions) goes to the clang++ driver, which knows
 # how to set up the z/OS Language Environment C++ runtime (CEE.SCEELIB CRTDQ*
 # members, CELQMAIN entry point).
-CLANG=/home/haritha/install_test/usr/lpp/IBM/oelcpp/v3r0/bin/clang
-CLANGXX=/home/haritha/install_test/usr/lpp/IBM/oelcpp/v3r0/bin/clang++
+#
+# @CLANG@ / @CLANGXX@ are substituted by buildenv at provisioning time
+# (resolved from COMPILER_PATH / PATH on the build machine).
+CLANG=@CLANG@
+CLANGXX=@CLANGXX@
 
 for arg in "$@"; do
   case "$arg" in

@@ -560,19 +560,37 @@ zopen_provision_local_repos() {
     done
 
     # --- 7. cc tool wrapper + empty stub archives ---------------------------
+    # Resolve the clang/clang++ drivers from COMPILER_PATH (already validated
+    # by zopen_bazel_make via --version before provisioning runs). No
+    # hardcoded paths: the wrapper template gets the drivers substituted in.
+    _ccbin="${COMPILER_PATH:-}"
+    if [ -n "${_ccbin}" ] && [ -d "${_ccbin}" ]; then
+        _ccbin="$(ls "${_ccbin}"/clang "${_ccbin}"/clang-* 2>/dev/null | head -1)"
+    fi
+    if [ -z "${_ccbin}" ] || [ ! -x "${_ccbin}" ]; then
+        _ccbin="$(command -v clang 2>/dev/null)"
+    fi
+    _ccxx="$(dirname "${_ccbin}")/clang++"
+    [ -x "${_ccxx}" ] || _ccxx="$(ls "$(dirname "${_ccbin}")"/clang++* 2>/dev/null | head -1)"
+    if [ -z "${_ccbin}" ] || [ ! -x "${_ccbin}" ] || [ -z "${_ccxx}" ] || [ ! -x "${_ccxx}" ]; then
+        echo "ERROR: cannot resolve clang/clang++ drivers for the zos_cc wrapper" >&2
+        return 1
+    fi
     mkdir -p "${_repos}/zos_cc_tools" "${_repos}/zos_stub_libs"
-    cp "${_files}/zos_cc_tools/zos_cc" "${_repos}/zos_cc_tools/zos_cc"
+    _tmpl "${_files}/zos_cc_tools/zos_cc" "${_repos}/zos_cc_tools/zos_cc" \
+        -e "s|@CLANG@|${_ccbin}|g" \
+        -e "s|@CLANGXX@|${_ccxx}|g"
     chmod +x "${_repos}/zos_cc_tools/zos_cc"
     cp "${_files}/zos_stub_libs/stub_dummy.c" "${_repos}/zos_stub_libs/stub_dummy.c"
     ( cd "${_repos}/zos_stub_libs" \
-      && /bin/env _CEE_RUNOPTS='POSIX(ON)' "$(dirname "$COMPILER_PATH")/clang" -c stub_dummy.c -o stub_dummy.o \
+      && /bin/env _CEE_RUNOPTS='POSIX(ON)' "${_ccbin}" -c stub_dummy.c -o stub_dummy.o \
       && ar r librt.a stub_dummy.o && ar r libdl.a stub_dummy.o && ar r libpthread.a stub_dummy.o )
 
     # --- 8. python3 wrapper (LIBPATH-setting program object) ----------------
     _w="${_repos}/python_wrapper"
     mkdir -p "${_w}"
     cp "${_files}/python_wrapper/python3_wrapper.c" "${_w}/python3_wrapper.c"
-    /bin/env _CEE_RUNOPTS='POSIX(ON)' "$(dirname "$COMPILER_PATH")/clang" -D_ALL_SOURCE=1 -fzos-le-char-mode=ascii \
+    /bin/env _CEE_RUNOPTS='POSIX(ON)' "${_ccbin}" -D_ALL_SOURCE=1 -fzos-le-char-mode=ascii \
         -O2 "${_w}/python3_wrapper.c" -o "${_w}/python3" || {
         echo "ERROR: failed to compile python3 wrapper" >&2; return 1; }
 
@@ -797,11 +815,8 @@ zopen_bazel_make() {
         echo "Tree tagging complete."
     fi
     # Provision local_repos on first use (fresh clone); idempotent.
-    zopen_provision_local_repos || return 1
-
-    # Generate local_repos wrapper BUILD files from .in templates: they wrap
-    # system-installed zopen artifacts, and BUILD files cannot read the
-    # environment, so the paths are templated and substituted here.
+    # _tmpl must be defined first: provisioning uses it to generate the
+    # zos_cc wrapper (templated compiler paths) from deps/files templates.
     _tmpl() {  # $1=template $2=out; remaining args are sed expressions
         _in="$1"; _out="$2"; shift 2
         # The .in templates are BINARY-tagged (raw byte reads). The zopen-build
@@ -812,11 +827,12 @@ zopen_bazel_make() {
         # changed at runtime (read once at LE init), so PRE-CREATE the output
         # with the correct tag: the shell's truncating redirect (>) preserves
         # an existing file tag, making the write codepage-stable.
-        #   *.sh  -> ISO8859-1 text (readable by EBCDIC /bin/sh AND ASCII bash)
+        #   *.sh, *zos_cc -> ISO8859-1 text (readable by EBCDIC /bin/sh AND
+        #                    ASCII bash; zos_cc is a #!/bin/sh script)
         #   BUILD -> binary (read raw by Bazel's JVM; text tags make NIO
         #            reads convert to the native codepage and corrupt UTF-8)
         case "${_out}" in
-            *.sh) _tflag="-tc ISO8859-1" ;;
+            *.sh|*zos_cc) _tflag="-tc ISO8859-1" ;;
             *)    _tflag="-b" ;;
         esac
         rm -f "${_out}.tmp"
@@ -827,6 +843,11 @@ zopen_bazel_make() {
         chmod --reference="${_in}" "${_out}" 2>/dev/null || true
         /bin/chtag ${_tflag} "${_out}" 2>/dev/null || true
     }
+    zopen_provision_local_repos || return 1
+
+    # Generate local_repos wrapper BUILD files from .in templates: they wrap
+    # system-installed zopen artifacts, and BUILD files cannot read the
+    # environment, so the paths are templated and substituted here.
     _repos="${BAZELPORT_ROOT}/local_repos"
     _gr="${GRPC_HOME:-${ZOPEN_ROOTFS}/usr/local/zopen/grpc/grpc}"
     _tmpl "${_repos}/com_github_grpc_grpc/BUILD.in" "${_repos}/com_github_grpc_grpc/BUILD" \
