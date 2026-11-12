@@ -16,7 +16,7 @@ export ZOPEN_BUILD_LINE="STABLE"
 
 ## Required IF ZOPEN_BUILD_LINE='STABLE'
 export ZOPEN_STABLE_URL="https://github.com/bazelbuild/bazel/releases/download/7.2.0/bazel-7.2.0-dist.zip"  # Specify the stable build URL (either git or tarball)
-export ZOPEN_STABLE_DEPS="check_java check_python zip unzip bash" # Specify the stable build dependencies.
+export ZOPEN_STABLE_DEPS="check_java check_python zip unzip bash patch" # Specify the stable build dependencies.
 
 ## Required IF ZOPEN_BUILD_LINE='DEV'
 export ZOPEN_DEV_URL="https://github.com/bazelbuild/bazel.git"   # Specify the dev build URL
@@ -630,17 +630,30 @@ zopen_bazel_make() {
     # Re-probe here: our bash environment and PATH are now fully set up.
 
     # --- Fix up COMPILER_PATH first (the probe below needs it): accept a
-    # --- bare compiler path or a bin/ directory containing clang.
-    if [ -n "${COMPILER_PATH:-}" ] && [ ! -x "${COMPILER_PATH}" ] && [ -d "${COMPILER_PATH}" ]; then
-        _clangbin="$(ls "${COMPILER_PATH}"/clang "${COMPILER_PATH}"/clang-* 2>/dev/null | head -1)"
-        [ -n "${_clangbin}" ] && COMPILER_PATH="${_clangbin}" && export COMPILER_PATH
-        unset _clangbin
+    # --- bare compiler path or a directory containing clang. Candidates
+    # --- are VALIDATED by running --version (broken symlinks and
+    # --- non-executable stubs like the Open XL dir's 'clang' entry are
+    # --- skipped); fall back to 'command -v clang'.
+    _cc_ok() { [ -n "${1:-}" ] && [ -x "${1}" ] && "${1}" --version >/dev/null 2>&1; }
+    if ! _cc_ok "${COMPILER_PATH:-}"; then
+        _ccsaved="${COMPILER_PATH:-}"
+        _cands=""
+        if [ -d "${_ccsaved}" ]; then
+            _cands="$(ls "${_ccsaved}"/clang "${_ccsaved}"/clang-* 2>/dev/null)"
+        elif [ -n "${_ccsaved}" ]; then
+            _cands="${_ccsaved}"
+        fi
+        _cands="${_cands} $(command -v clang 2>/dev/null)"
+        for _c in ${_cands}; do
+            if _cc_ok "${_c}"; then
+                COMPILER_PATH="${_c}"
+                export COMPILER_PATH
+                break
+            fi
+        done
+        unset _c _cands _ccsaved
     fi
-    if [ -z "${COMPILER_PATH:-}" ] || [ ! -x "${COMPILER_PATH}" ]; then
-        _clangbin="$(command -v clang 2>/dev/null)"
-        [ -n "${_clangbin}" ] && COMPILER_PATH="${_clangbin}" && export COMPILER_PATH
-        unset _clangbin
-    fi
+    unset -f _cc_ok 2>/dev/null
 
     # --- Derive PYTHON_HOME from the python3/python on PATH when not set:
     # --- PYTHON_HOME is the SDK root (bin/python3, lib/, ...).
