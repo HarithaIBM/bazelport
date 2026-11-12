@@ -843,6 +843,13 @@ zopen_bazel_make() {
         -e "s|@SQLITE_INC@|${SQLITE_HOME}/include|g"
     unset -f _tmpl
 
+    # --- TMPDIR: /tmp on z/OS is often a tiny FS that fills up during
+    # --- compile.sh's jar-unzip scratch dirs. Use a dir under the build
+    # --- root instead (honored by compile.sh / mktemp / unzip wrappers).
+    mkdir -p "${BAZELPORT_ROOT}/tmp"
+    export TMPDIR="${BAZELPORT_ROOT}/tmp"
+    echo "Using TMPDIR: ${TMPDIR}"
+
     echo "Running FULL Bazel compile.sh in $(pwd)..."
     bash ./compile.sh
     rc=$?
