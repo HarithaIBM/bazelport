@@ -770,6 +770,21 @@ zopen_bazel_make() {
     export CXX=${CXX:-clang++}
     # z/OS: identify the libc to the auto-configured cc toolchain
     export BAZEL_TARGET_LIBC=zos
+    # Genrule actions exec /bin/bash by default (local_config_shell falls
+    # back to it). Machines without /bin/bash fail every genrule spawn with
+    # EXECUTION_FAILED — point Bazel at the bash found on PATH instead
+    # (BAZEL_SH/SHELL are both honored before the /bin/bash fallback).
+    if [ ! -x /bin/bash ]; then
+        _bashbin="$(command -v bash 2>/dev/null)"
+        if [ -n "${_bashbin}" ]; then
+            export BAZEL_SH="${_bashbin}"
+            export SHELL="${_bashbin}"
+            echo "Note: /bin/bash not present; using ${_bashbin} for genrule shell" >&2
+        else
+            echo "ERROR: no /bin/bash and no bash on PATH — genrules cannot run" >&2
+            return 1
+        fi
+    fi
     export LC_ALL=${LC_ALL:-C.UTF-8}
     # z/OS: Tag generated scripts for exec() but don't corrupt binary file reads
     export _TAG_REDIR_IN=txt=ISO8859-1
