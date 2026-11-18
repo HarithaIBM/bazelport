@@ -425,9 +425,17 @@ zopen_provision_local_repos() {
     _dlrepo() {  # $1=name $2=url $3=strip_prefix
         [ -d "${_repos}/$1" ] && return 0
         echo "  downloading $1 ..."
-        _dl "$2" "/tmp/bazelport_$1.tgz" || return 1
+        # Prefer a vendored pristine copy (deps/pristine/<name>.tar.gz) —
+        # build machines may have no/blocked GitHub access.
+        _tgz=""
+        if [ -f "${_deps}/pristine/$1.tar.gz" ]; then
+            _tgz="${_deps}/pristine/$1.tar.gz"
+        else
+            _tgz="/tmp/bazelport_$1.tgz"
+            _dl "$2" "$_tgz" || return 1
+        fi
         rm -rf "/tmp/bazelport_x_$1" && mkdir -p "/tmp/bazelport_x_$1"
-        tar -I "${_GZIP}" -xf "/tmp/bazelport_$1.tgz" -C "/tmp/bazelport_x_$1" || return 1
+        tar -I "${_GZIP}" -xf "$_tgz" -C "/tmp/bazelport_x_$1" || return 1
         # cp -R (NOT mv: cross-filesystem mv on z/OS drops files with
         # FSUM8985 uid/gid warnings)
         mkdir -p "${_repos}/$1"
@@ -437,6 +445,7 @@ zopen_provision_local_repos() {
             cp -R "/tmp/bazelport_x_$1/." "${_repos}/$1/" || return 1
         fi
         rm -rf "/tmp/bazelport_x_$1" "/tmp/bazelport_$1.tgz"
+        unset _tgz
     }
     _dlrepo bazel_skylib \
         https://github.com/bazelbuild/bazel-skylib/releases/download/1.6.1/bazel-skylib-1.6.1.tar.gz \
