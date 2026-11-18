@@ -429,7 +429,11 @@ zopen_provision_local_repos() {
         # source of truth. deps/pristine/<name>.tar.gz is an OFFLINE FALLBACK
         # for machines without GitHub access; refresh it whenever the URL
         # above is bumped (see deps/pristine/README.md and CKSUMS).
-        _tgz="/tmp/bazelport_$1.tgz"
+        # Scratch space under the build root — /tmp on z/OS is often a tiny
+        # FS that fills up mid-extraction (EDC5133I No space left on device).
+        _pscratch="${BAZELPORT_ROOT}/tmp/provision"
+        mkdir -p "${_pscratch}"
+        _tgz="${_pscratch}/$1.tgz"
         if [ "${_NETOK}" = "1" ]; then
             if ! _dl "$2" "$_tgz"; then
                 if [ -f "${_deps}/pristine/$1.tar.gz" ]; then
@@ -446,18 +450,18 @@ zopen_provision_local_repos() {
             echo "ERROR: no network and no vendored copy for $1" >&2
             return 1
         fi
-        rm -rf "/tmp/bazelport_x_$1" && mkdir -p "/tmp/bazelport_x_$1"
-        tar -I "${_GZIP}" -xf "$_tgz" -C "/tmp/bazelport_x_$1" || return 1
+        rm -rf "${_pscratch}/x_$1" && mkdir -p "${_pscratch}/x_$1"
+        tar -I "${_GZIP}" -xf "$_tgz" -C "${_pscratch}/x_$1" || return 1
         # cp -R (NOT mv: cross-filesystem mv on z/OS drops files with
         # FSUM8985 uid/gid warnings)
         mkdir -p "${_repos}/$1"
-        if [ -d "/tmp/bazelport_x_$1/$3" ]; then
-            cp -R "/tmp/bazelport_x_$1/$3/." "${_repos}/$1/" || return 1
+        if [ -d "${_pscratch}/x_$1/$3" ]; then
+            cp -R "${_pscratch}/x_$1/$3/." "${_repos}/$1/" || return 1
         else
-            cp -R "/tmp/bazelport_x_$1/." "${_repos}/$1/" || return 1
+            cp -R "${_pscratch}/x_$1/." "${_repos}/$1/" || return 1
         fi
-        rm -rf "/tmp/bazelport_x_$1" "/tmp/bazelport_$1.tgz"
-        unset _tgz
+        rm -rf "${_pscratch}/x_$1" "${_pscratch}/$1.tgz"
+        unset _tgz _pscratch
     }
     # One quick connectivity probe: on offline machines, skip the slow
     # per-repo retry cycles and use the vendored fallbacks immediately.
