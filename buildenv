@@ -425,14 +425,26 @@ zopen_provision_local_repos() {
     _dlrepo() {  # $1=name $2=url $3=strip_prefix
         [ -d "${_repos}/$1" ] && return 0
         echo "  downloading $1 ..."
-        # Prefer a vendored pristine copy (deps/pristine/<name>.tar.gz) —
-        # build machines may have no/blocked GitHub access.
-        _tgz=""
-        if [ -f "${_deps}/pristine/$1.tar.gz" ]; then
+        # Download from the (pinned) upstream URL — the network copy is the
+        # source of truth. deps/pristine/<name>.tar.gz is an OFFLINE FALLBACK
+        # for machines without GitHub access; refresh it whenever the URL
+        # above is bumped (see deps/pristine/README.md and CKSUMS).
+        _tgz="/tmp/bazelport_$1.tgz"
+        if [ "${_NETOK}" = "1" ]; then
+            if ! _dl "$2" "$_tgz"; then
+                if [ -f "${_deps}/pristine/$1.tar.gz" ]; then
+                    echo "  note: network download failed; using vendored ${_deps}/pristine/$1.tar.gz" >&2
+                    _tgz="${_deps}/pristine/$1.tar.gz"
+                else
+                    return 1
+                fi
+            fi
+        elif [ -f "${_deps}/pristine/$1.tar.gz" ]; then
+            echo "  note: no network; using vendored ${_deps}/pristine/$1.tar.gz" >&2
             _tgz="${_deps}/pristine/$1.tar.gz"
         else
-            _tgz="/tmp/bazelport_$1.tgz"
-            _dl "$2" "$_tgz" || return 1
+            echo "ERROR: no network and no vendored copy for $1" >&2
+            return 1
         fi
         rm -rf "/tmp/bazelport_x_$1" && mkdir -p "/tmp/bazelport_x_$1"
         tar -I "${_GZIP}" -xf "$_tgz" -C "/tmp/bazelport_x_$1" || return 1
@@ -447,6 +459,10 @@ zopen_provision_local_repos() {
         rm -rf "/tmp/bazelport_x_$1" "/tmp/bazelport_$1.tgz"
         unset _tgz
     }
+    # One quick connectivity probe: on offline machines, skip the slow
+    # per-repo retry cycles and use the vendored fallbacks immediately.
+    _NETOK=0
+    "${_CURL}" -sS --max-time 10 -o /dev/null -I https://github.com 2>/dev/null && _NETOK=1
     _dlrepo bazel_skylib \
         https://github.com/bazelbuild/bazel-skylib/releases/download/1.6.1/bazel-skylib-1.6.1.tar.gz \
         bazel-skylib-1.6.1 || return 1
