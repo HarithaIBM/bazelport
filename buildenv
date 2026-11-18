@@ -524,8 +524,15 @@ zopen_provision_local_repos() {
     ln -sf ../../jars/libutil.jar "${_p}/java/util/libutil.jar"
     # libprotobuf.a from the zopen merged lib (symlink to the grpc pkg's copy)
     ln -sf "${ZOPEN_ROOTFS}/usr/local/lib/libprotobuf.a" "${_p}/lib/libprotobuf.a"
-    # protoc binary from the zopen grpc package
-    ln -sf "${GRPC_HOME}/bin/protoc-31.0.0" "${_p}/protoc.bin"
+    # protoc binary from the zopen grpc package (version may differ
+    # between machines — resolve instead of hardcoding protoc-31.0.0)
+    _protocbin="$(ls "${GRPC_HOME}/bin/protoc" 2>/dev/null | head -1)"
+    [ -n "${_protocbin}" ] || _protocbin="$(ls "${GRPC_HOME}/bin/"protoc-* 2>/dev/null | sort -V | tail -1)"
+    if [ -z "${_protocbin}" ]; then
+        echo "ERROR: no protoc found in ${GRPC_HOME}/bin" >&2
+        return 1
+    fi
+    ln -sf "${_protocbin}" "${_p}/protoc.bin"
     cp "${_files}/com_google_protobuf/BUILD.in" "${_p}/BUILD.in"
     cp "${_files}/com_google_protobuf/protoc_wrapper.sh.in" "${_p}/protoc_wrapper.sh.in"
     cp "${_files}/com_google_protobuf/WORKSPACE" "${_p}/WORKSPACE"
@@ -892,8 +899,16 @@ zopen_bazel_make() {
         -e "s|@ZLIB_LIB@|${ZLIB_HOME}/lib/libz.a|g" \
         -e "s|@ZOSLIB_A@|${ZOSLIB_HOME}/lib/libzoslib.a|g" \
         -e "s|@PROTOC@|${ZOPEN_ROOTFS}/usr/local/bin/protoc|g"
+    # protoc for the wrapper: resolve from the grpc package (version may
+    # differ between machines); works even when provisioning was skipped
+    _protocbin="$(ls "${_gr}/bin/protoc" 2>/dev/null | head -1)"
+    [ -n "${_protocbin}" ] || _protocbin="$(ls "${_gr}/bin/"protoc-* 2>/dev/null | sort -V | tail -1)"
+    if [ -z "${_protocbin}" ]; then
+        echo "ERROR: no protoc found in ${_gr}/bin" >&2
+        return 1
+    fi
     _tmpl "${_repos}/com_google_protobuf/protoc_wrapper.sh.in" "${_repos}/com_google_protobuf/protoc_wrapper.sh" \
-        -e "s|@PROTOC_BIN@|${_gr}/bin/protoc-31.0.0|g"
+        -e "s|@PROTOC_BIN@|${_protocbin}|g"
     _tmpl "${_repos}/sqlite3/BUILD.in" "${_repos}/sqlite3/BUILD" \
         -e "s|@SQLITE_LIB@|${SQLITE_HOME}/lib/libsqlite3.a|g" \
         -e "s|@SQLITE_INC@|${SQLITE_HOME}/include|g"

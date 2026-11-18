@@ -1,0 +1,19 @@
+diff --git a/src/main/java/com/google/devtools/build/lib/exec/local/LocalSpawnRunner.java b/src/main/java/com/google/devtools/build/lib/exec/local/LocalSpawnRunner.java
+--- a/src/main/java/com/google/devtools/build/lib/exec/local/LocalSpawnRunner.java	2026-11-13 07:22:03 -0500
++++ b/src/main/java/com/google/devtools/build/lib/exec/local/LocalSpawnRunner.java	2026-11-13 07:22:44 -0500
+@@ -447,6 +447,15 @@
+           throw new InterruptedException(e.getMessage());
+         } catch (IOException e) {
+           String msg = e.getMessage() == null ? e.getClass().getName() : e.getMessage();
++          // z/OS: mirror the spawn failure to the console - the action stderr
++          // file is not shown by the batch bootstrap runner, leaving spawn
++          // failures (missing tool, bad interpreter, ...) invisible.
++          System.err.println("[Z/OS-SPAWN] local spawn failed: " + actionType);
++          System.err.println("[Z/OS-SPAWN] argv0: " + args.get(0));
++          System.err.println("[Z/OS-SPAWN] cmd: " + debugCmdString());
++          System.err.println("[Z/OS-SPAWN] IOException: " + msg);
++          e.printStackTrace(System.err);
++          System.err.flush();
+           setState(State.PERMANENT_ERROR);
+           outErr
+               .getErrorStream()
