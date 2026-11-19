@@ -708,29 +708,40 @@ zopen_bazel_make() {
     # Re-probe here: our bash environment and PATH are now fully set up.
 
     # --- Fix up COMPILER_PATH first (the probe below needs it): accept a
-    # --- bare compiler path or a directory containing clang. Candidates
-    # --- are VALIDATED by running --version (broken symlinks and
-    # --- non-executable stubs like the Open XL dir's 'clang' entry are
-    # --- skipped); fall back to 'command -v clang'.
+    # --- Resolve the clang driver. PRIORITY: the clang on PATH (the
+    # --- user's environment choice — e.g. oelcpp clang), NOT any
+    # --- pre-configured COMPILER_PATH (the zopen harness may point it at
+    # --- a different toolchain, e.g. Open XL, whose linking behavior
+    # --- differs). $COMPILER_PATH (or a clang inside it, if it is a
+    # --- directory) is only a fallback when no usable clang is on PATH.
+    # --- All candidates are VALIDATED by running --version (broken
+    # --- symlinks and non-executable stubs are skipped).
     _cc_ok() { [ -n "${1:-}" ] && [ -x "${1}" ] && "${1}" --version >/dev/null 2>&1; }
-    if ! _cc_ok "${COMPILER_PATH:-}"; then
-        _ccsaved="${COMPILER_PATH:-}"
+    _ccbin="$(command -v clang 2>/dev/null)"
+    if ! _cc_ok "${_ccbin}"; then
+        _ccbin=""
         _cands=""
-        if [ -d "${_ccsaved}" ]; then
-            _cands="$(ls "${_ccsaved}"/clang "${_ccsaved}"/clang-* 2>/dev/null)"
-        elif [ -n "${_ccsaved}" ]; then
-            _cands="${_ccsaved}"
+        if [ -n "${COMPILER_PATH:-}" ]; then
+            if [ -d "${COMPILER_PATH}" ]; then
+                _cands="$(ls "${COMPILER_PATH}"/clang "${COMPILER_PATH}"/clang-* 2>/dev/null)"
+            else
+                _cands="${COMPILER_PATH}"
+            fi
         fi
-        _cands="${_cands} $(command -v clang 2>/dev/null)"
         for _c in ${_cands}; do
             if _cc_ok "${_c}"; then
-                COMPILER_PATH="${_c}"
-                export COMPILER_PATH
+                _ccbin="${_c}"
                 break
             fi
         done
-        unset _c _cands _ccsaved
+        unset _c _cands
     fi
+    if ! _cc_ok "${_ccbin}"; then
+        echo "ERROR: no usable clang found (PATH or COMPILER_PATH)" >&2
+        return 1
+    fi
+    COMPILER_PATH="${_ccbin}"
+    export COMPILER_PATH
     unset -f _cc_ok 2>/dev/null
 
     # --- Derive JAVA_HOME from java/javac on PATH when not set or not a
