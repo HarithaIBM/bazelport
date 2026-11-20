@@ -697,6 +697,19 @@ zopen_bazel_make() {
         unset _p _patchbin
     fi
 
+    # --- Substitute the python toolchain placeholder from patch 0011: the
+    # --- port's LIBPATH-setting python3 wrapper (created during
+    # --- provisioning; the path is deterministic). No machine-specific
+    # --- interpreter path stays baked into the extract.
+    if [ -f tools/python/toolchain.bzl ] \
+            && grep -q "@ZOS_PYTHON3@" tools/python/toolchain.bzl 2>/dev/null; then
+        _pywrap="${BAZELPORT_ROOT}/local_repos/python_wrapper/python3"
+        sed -e "s|@ZOS_PYTHON3@|${_pywrap}|g" \
+            tools/python/toolchain.bzl > tools/python/toolchain.bzl.sub \
+            && mv -f tools/python/toolchain.bzl.sub tools/python/toolchain.bzl
+        unset _pywrap
+    fi
+
     # --- Tag the vendored deps (a fresh git clone leaves all files
     # --- untagged; clang/patch read untagged ASCII as EBCDIC garbage).
     find "${BAZELPORT_ROOT}/deps" -type f -exec /bin/chtag -b {} + 2>/dev/null
