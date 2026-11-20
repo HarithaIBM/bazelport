@@ -700,14 +700,33 @@ zopen_bazel_make() {
     # --- Substitute the python toolchain placeholder from patch 0011: the
     # --- port's LIBPATH-setting python3 wrapper (created during
     # --- provisioning; the path is deterministic). No machine-specific
-    # --- interpreter path stays baked into the extract.
+    # --- interpreter path stays baked into the extract. Uses the same
+    # --- EBCDIC-safe recipe as _tmpl: pre-create the output with a binary
+    # --- tag, run sed under POSIX(ON), verify, then move into place.
     if [ -f tools/python/toolchain.bzl ] \
             && grep -q "@ZOS_PYTHON3@" tools/python/toolchain.bzl 2>/dev/null; then
         _pywrap="${BAZELPORT_ROOT}/local_repos/python_wrapper/python3"
-        sed -e "s|@ZOS_PYTHON3@|${_pywrap}|g" \
-            tools/python/toolchain.bzl > tools/python/toolchain.bzl.sub \
-            && mv -f tools/python/toolchain.bzl.sub tools/python/toolchain.bzl
+        echo "Substituting @ZOS_PYTHON3@ -> ${_pywrap} in tools/python/toolchain.bzl"
+        rm -f tools/python/toolchain.bzl.sub
+        : > tools/python/toolchain.bzl.sub
+        /bin/chtag -b tools/python/toolchain.bzl.sub 2>/dev/null
+        ( unset _TAG_REDIR_OUT _TAG_REDIR_ALL
+          /bin/env _CEE_RUNOPTS='POSIX(ON)' sed -e "s|@ZOS_PYTHON3@|${_pywrap}|g" \
+              tools/python/toolchain.bzl > tools/python/toolchain.bzl.sub )
+        if [ -s tools/python/toolchain.bzl.sub ] \
+                && ! grep -q "@ZOS_PYTHON3@" tools/python/toolchain.bzl.sub 2>/dev/null \
+                && grep -q "interpreter_path = \"${_pywrap}\"" tools/python/toolchain.bzl.sub 2>/dev/null; then
+            mv -f tools/python/toolchain.bzl.sub tools/python/toolchain.bzl
+        else
+            echo "ERROR: @ZOS_PYTHON3@ substitution failed (see tools/python/toolchain.bzl.sub)" >&2
+            return 1
+        fi
         unset _pywrap
+    fi
+    # HARD check: the placeholder must never survive into the build
+    if grep -q "@ZOS_PYTHON3@" tools/python/toolchain.bzl 2>/dev/null; then
+        echo "ERROR: tools/python/toolchain.bzl still contains @ZOS_PYTHON3@ (unsubstituted placeholder)" >&2
+        return 1
     fi
 
     # --- Tag the vendored deps (a fresh git clone leaves all files
