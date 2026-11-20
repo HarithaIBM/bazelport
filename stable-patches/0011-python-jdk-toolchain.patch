@@ -12,7 +12,10 @@ index eb5f63f..0868815
 +        # z/OS: use the system Python interpreter directly instead of the
 +        # py3wrapper.sh script, which z/OS /bin/sh cannot read (untagged
 +        # ASCII generated files are read as EBCDIC by z/OS shells).
-+        interpreter_path = "/home/opnzos/local/install/bin/python3.8",
++        # @ZOS_PYTHON3@ is substituted by buildenv after patching with the
++        # port's LIBPATH-setting python3 wrapper — no machine-specific
++        # interpreter path is baked in here.
++        interpreter_path = "@ZOS_PYTHON3@",
          python_version = "PY3",
          stub_shebang = "#!/usr/bin/env python3",
          visibility = ["//visibility:private"],
