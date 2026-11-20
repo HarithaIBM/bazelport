@@ -4,7 +4,7 @@ new mode 100755
 index eb5f63f..0868815
 --- a/tools/python/toolchain.bzl
 +++ b/tools/python/toolchain.bzl
-@@ -189,7 +189,10 @@ def define_autodetecting_toolchain(
+@@ -189,7 +189,13 @@ def define_autodetecting_toolchain(
  
      py_runtime(
          name = "_autodetecting_py3_runtime",
